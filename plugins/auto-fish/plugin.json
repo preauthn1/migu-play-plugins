@@ -1,0 +1,11 @@
+{
+  "id": "auto-fish",
+  "name": "自动钓鱼",
+  "version": "1.0.0",
+  "author": "preauthn1",
+  "description": "移植自 BetterGI 钓鱼思路：固定节奏循环抛竿/收杆按键挂机钓鱼。",
+  "homepage": "https://github.com/preauthn1/migu-play-plugins",
+  "match": ["*"],
+  "minAppVersion": "2.14.0",
+  "permissions": []
+}

@@ -1,0 +1,11 @@
+{
+  "id": "macro-recorder",
+  "name": "键鼠录制",
+  "version": "1.0.0",
+  "author": "preauthn1",
+  "description": "移植自 BetterGI：录制画面点击序列并按原始节奏循环回放。",
+  "homepage": "https://github.com/preauthn1/migu-play-plugins",
+  "match": ["*"],
+  "minAppVersion": "2.14.0",
+  "permissions": []
+}

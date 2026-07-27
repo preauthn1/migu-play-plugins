@@ -1,0 +1,11 @@
+{
+  "id": "auto-pickup",
+  "name": "自动拾取",
+  "version": "1.0.0",
+  "author": "preauthn1",
+  "description": "移植自 BetterGI：挂机时周期发送 F 键自动交互/拾取（PC 类游戏）。",
+  "homepage": "https://github.com/preauthn1/migu-play-plugins",
+  "match": ["*"],
+  "minAppVersion": "2.14.0",
+  "permissions": []
+}

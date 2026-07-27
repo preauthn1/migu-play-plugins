@@ -1,0 +1,11 @@
+{
+  "id": "auto-skip",
+  "name": "自动剧情",
+  "version": "1.0.0",
+  "author": "preauthn1",
+  "description": "移植自 BetterGI：连续点击对话区域快速跳过剧情，浮动按钮开关。",
+  "homepage": "https://github.com/preauthn1/migu-play-plugins",
+  "match": ["*"],
+  "minAppVersion": "2.14.0",
+  "permissions": []
+}

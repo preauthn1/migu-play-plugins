@@ -1,0 +1,11 @@
+{
+  "id": "spin-helper",
+  "name": "转圈助手",
+  "version": "1.0.0",
+  "author": "preauthn1",
+  "description": "移植自 BetterGI 那维莱特转圈：一键持续水平旋转视角。",
+  "homepage": "https://github.com/preauthn1/migu-play-plugins",
+  "match": ["*"],
+  "minAppVersion": "2.14.0",
+  "permissions": []
+}

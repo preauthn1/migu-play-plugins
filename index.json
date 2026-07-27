@@ -2,6 +2,45 @@
   "schema": 1,
   "plugins": [
     {
+      "id": "auto-fish",
+      "name": "自动钓鱼",
+      "version": "1.0.0",
+      "author": "preauthn1",
+      "description": "移植自 BetterGI 钓鱼思路：固定节奏循环抛竿/收杆按键挂机钓鱼。",
+      "match": [
+        "*"
+      ],
+      "minAppVersion": "2.14.0",
+      "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "script": "plugins/auto-fish/main.js"
+    },
+    {
+      "id": "auto-pickup",
+      "name": "自动拾取",
+      "version": "1.0.0",
+      "author": "preauthn1",
+      "description": "移植自 BetterGI：挂机时周期发送 F 键自动交互/拾取（PC 类游戏）。",
+      "match": [
+        "*"
+      ],
+      "minAppVersion": "2.14.0",
+      "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "script": "plugins/auto-pickup/main.js"
+    },
+    {
+      "id": "auto-skip",
+      "name": "自动剧情",
+      "version": "1.0.0",
+      "author": "preauthn1",
+      "description": "移植自 BetterGI：连续点击对话区域快速跳过剧情，浮动按钮开关。",
+      "match": [
+        "*"
+      ],
+      "minAppVersion": "2.14.0",
+      "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "script": "plugins/auto-skip/main.js"
+    },
+    {
       "id": "eye-care",
       "name": "护眼滤镜",
       "version": "1.0.0",
@@ -26,6 +65,32 @@
       "minAppVersion": "2.14.0",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
       "script": "plugins/fps-overlay/main.js"
+    },
+    {
+      "id": "macro-recorder",
+      "name": "键鼠录制",
+      "version": "1.0.0",
+      "author": "preauthn1",
+      "description": "移植自 BetterGI：录制画面点击序列并按原始节奏循环回放。",
+      "match": [
+        "*"
+      ],
+      "minAppVersion": "2.14.0",
+      "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "script": "plugins/macro-recorder/main.js"
+    },
+    {
+      "id": "spin-helper",
+      "name": "转圈助手",
+      "version": "1.0.0",
+      "author": "preauthn1",
+      "description": "移植自 BetterGI 那维莱特转圈：一键持续水平旋转视角。",
+      "match": [
+        "*"
+      ],
+      "minAppVersion": "2.14.0",
+      "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "script": "plugins/spin-helper/main.js"
     }
   ]
 }
