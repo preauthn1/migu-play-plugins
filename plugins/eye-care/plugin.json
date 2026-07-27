@@ -1,0 +1,11 @@
+{
+  "id": "eye-care",
+  "name": "护眼滤镜",
+  "version": "1.0.0",
+  "author": "preauthn1",
+  "description": "游戏画面叠加可开关的暖色护眼滤镜，减少夜间蓝光刺激。",
+  "homepage": "https://github.com/preauthn1/migu-play-plugins",
+  "match": ["*"],
+  "minAppVersion": "2.14.0",
+  "permissions": []
+}

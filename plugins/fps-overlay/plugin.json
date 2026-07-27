@@ -1,0 +1,11 @@
+{
+  "id": "fps-overlay",
+  "name": "帧率显示",
+  "version": "1.0.0",
+  "author": "preauthn1",
+  "description": "在游戏画面左上角显示实时 FPS，随时了解流畅度。",
+  "homepage": "https://github.com/preauthn1/migu-play-plugins",
+  "match": ["*"],
+  "minAppVersion": "2.14.0",
+  "permissions": []
+}

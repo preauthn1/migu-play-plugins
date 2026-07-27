@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "plugins": [
+    {
+      "id": "eye-care",
+      "name": "护眼滤镜",
+      "version": "1.0.0",
+      "author": "preauthn1",
+      "description": "游戏画面叠加可开关的暖色护眼滤镜，减少夜间蓝光刺激。",
+      "match": [
+        "*"
+      ],
+      "minAppVersion": "2.14.0",
+      "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "script": "plugins/eye-care/main.js"
+    },
+    {
+      "id": "fps-overlay",
+      "name": "帧率显示",
+      "version": "1.0.0",
+      "author": "preauthn1",
+      "description": "在游戏画面左上角显示实时 FPS，随时了解流畅度。",
+      "match": [
+        "*"
+      ],
+      "minAppVersion": "2.14.0",
+      "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "script": "plugins/fps-overlay/main.js"
+    }
+  ]
+}
