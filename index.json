@@ -12,6 +12,8 @@
       ],
       "minAppVersion": "2.14.0",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "permissions": [],
+      "assets": [],
       "script": "plugins/auto-fish/main.js"
     },
     {
@@ -25,6 +27,8 @@
       ],
       "minAppVersion": "2.14.0",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "permissions": [],
+      "assets": [],
       "script": "plugins/auto-pickup/main.js"
     },
     {
@@ -38,6 +42,8 @@
       ],
       "minAppVersion": "2.14.0",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "permissions": [],
+      "assets": [],
       "script": "plugins/auto-skip/main.js"
     },
     {
@@ -51,6 +57,8 @@
       ],
       "minAppVersion": "2.14.0",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "permissions": [],
+      "assets": [],
       "script": "plugins/eye-care/main.js"
     },
     {
@@ -64,7 +72,40 @@
       ],
       "minAppVersion": "2.14.0",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "permissions": [],
+      "assets": [],
       "script": "plugins/fps-overlay/main.js"
+    },
+    {
+      "id": "genshin-map-overlay",
+      "name": "原神地图叠加",
+      "version": "0.1.0",
+      "author": "preauthn1",
+      "description": "wiki 全地标点位叠加在游戏内大地图，ORB+光流连续跟随，F8 切换。",
+      "match": [
+        "*"
+      ],
+      "minAppVersion": "2.16.0",
+      "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "permissions": [
+        "frame-capture",
+        "large-assets",
+        "remote-tiles",
+        "wasm"
+      ],
+      "assets": [
+        {
+          "path": "vendor/opencv.js",
+          "sha256": "63366510248adf3a7eddf3e793dd825404efb7df3749f4d6f8557c7fa4ca8aa0",
+          "size": 10964323
+        },
+        {
+          "path": "data/points.json",
+          "sha256": "ebd018cf982d6661fef86fa4543e7b695d587720e424900976804acb28cf6127",
+          "size": 117852
+        }
+      ],
+      "script": "plugins/genshin-map-overlay/main.js"
     },
     {
       "id": "macro-recorder",
@@ -77,6 +118,8 @@
       ],
       "minAppVersion": "2.14.0",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "permissions": [],
+      "assets": [],
       "script": "plugins/macro-recorder/main.js"
     },
     {
@@ -90,6 +133,8 @@
       ],
       "minAppVersion": "2.14.0",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
+      "permissions": [],
+      "assets": [],
       "script": "plugins/spin-helper/main.js"
     }
   ]
