@@ -5,6 +5,103 @@
   if (window.__miguPlugin_genshin_map_overlay) return;
   window.__miguPlugin_genshin_map_overlay = true;
 
+  // ---- 诊断：把异常连同堆栈显示出来 ---------------------------------------
+  // 用户在移动端遇到过 "table index is out of bounds"（WASM 运行时陷阱，
+  // 该文本不在任何 JS 源码里，也不在引擎二进制里，所以无法靠搜索定位）。
+  // 手机上看不到控制台，没有堆栈就只能猜——已经因此否证了四个假设。
+  //
+  // 所以插件自带一个日志页：所有日志/异常/环境信息都收进环形缓冲，
+  // 点「日志」按钮弹出、可一键复制。用户把复制内容发来即可定位。
+  var LOGCAP = 400;
+  var logs = [];
+  var lastError = null;
+
+  function stamp() {
+    var d = new Date();
+    return ('0' + d.getHours()).slice(-2) + ':' +
+           ('0' + d.getMinutes()).slice(-2) + ':' +
+           ('0' + d.getSeconds()).slice(-2) + '.' +
+           ('00' + d.getMilliseconds()).slice(-3);
+  }
+
+  function log(level, msg) {
+    var line = stamp() + ' [' + level + '] ' + msg;
+    logs.push(line);
+    if (logs.length > LOGCAP) logs.shift();
+    try {
+      if (level === 'ERR') console.error('[map-overlay] ' + msg);
+      else console.log('[map-overlay] ' + msg);
+    } catch (_) {}
+    if (logPane && logPane.style.display !== 'none') renderLog();
+  }
+
+  function recordError(where, e) {
+    var msg = (e && e.message) ? e.message : String(e);
+    var stack = (e && e.stack) ? String(e.stack) : '(无堆栈)';
+    lastError = { where: where, message: msg, stack: stack, at: stamp() };
+    window.__miguMapOverlayLastError = lastError;
+    log('ERR', where + ': ' + msg);
+    // 堆栈单独逐行记录，复制出来才有定位价值
+    stack.split('\n').slice(0, 8).forEach(function (l) {
+      if (l.trim()) log('ERR', '  ' + l.trim());
+    });
+    return lastError;
+  }
+
+  // 未捕获异常 / Promise 拒绝也要收：WASM 陷阱常从 rAF 回调冒出来，
+  // 不会经过我们自己的 try/catch。
+  window.addEventListener('error', function (ev) {
+    if (!ev || !ev.message) return;
+    recordError('window.onerror@' + (ev.filename || '?') + ':' + (ev.lineno || 0),
+                ev.error || new Error(ev.message));
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    recordError('unhandledrejection', (ev && ev.reason) || new Error('unknown'));
+  });
+
+  function envInfo() {
+    var CV = window.cv;
+    var lines = [
+      '=== 环境 ===',
+      'UA: ' + navigator.userAgent,
+      'URL: ' + location.href,
+      '视口: ' + innerWidth + 'x' + innerHeight + ' dpr=' + devicePixelRatio,
+      'opencv: ' + (CV ? (CV.ORB ? '已就绪' : 'cv存在但ORB缺失') : '未加载') +
+        (CV && CV.getBuildInformation ? '' : ''),
+      '插件状态: on=' + st.on + ' ready=' + st.ready + ' tracking=' + st.tracking,
+      '参照特征: kp=' + (st.refKp ? st.refKp.size() : '-') +
+        ' desc=' + (st.refDesc ? st.refDesc.rows : '-'),
+      '画面: ' + (st.surface
+        ? (st.surface.tagName + ' ' +
+           (st.surface.videoWidth || st.surface.width) + 'x' +
+           (st.surface.videoHeight || st.surface.height))
+        : '未找到'),
+      '分类数: ' + (st.cats ? Object.keys(st.cats).length : 0) +
+        ' 已选: ' + (st.enabled ? Object.values(st.enabled).filter(Boolean).length : 0),
+    ];
+    if (lastError) {
+      lines.push('=== 最近异常 ===',
+                 lastError.at + ' @' + lastError.where,
+                 lastError.message, lastError.stack);
+    }
+    return lines.join('\n');
+  }
+
+  function fullLogText() {
+    return envInfo() + '\n=== 日志(' + logs.length + ') ===\n' + logs.join('\n');
+  }
+  window.__miguMapOverlayLog = fullLogText;
+  window.__miguMapOverlayDiag = function () {
+    return lastError || { message: '（尚未捕获到异常）' };
+  };
+
+  // 日志面板（延迟创建，见 buildLogPane）
+  var logPane = null, logBody = null;
+  function renderLog() {
+    if (logBody) logBody.textContent = fullLogText();
+  }
+
+
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
   var TILE = 'https://wiki-dev-patch-oss.oss-cn-hangzhou.aliyuncs.com/res/ys/map-6.7/1/tiles-G/';
 
@@ -49,9 +146,13 @@
   head.innerHTML = '<span style="flex:1">点位列表</span>';
   var btnFold = mkBtn('—', '折叠列表');
   var btnClose = mkBtn('✕', '关闭叠加（桌面端 F8）');
-  head.appendChild(btnFold); head.appendChild(btnClose);
+  // 诊断入口：手机上没有控制台，出问题时靠它把日志+堆栈复制出来。
+  var btnLog = mkBtn('日志', '查看/复制诊断日志');
+  btnLog.onclick = function () { showLog(); };
+  head.appendChild(btnLog); head.appendChild(btnFold); head.appendChild(btnClose);
 
   var status = document.createElement('div');
+  status.id = '__migu_ov_status';   // window.onerror 处理器靠它显示堆栈摘要
   status.style.cssText = 'padding:4px 10px;font:11px/1.5 monospace;color:#7fd6c0;' +
     'background:rgba(0,0,0,.25)';
 
@@ -116,20 +217,30 @@
   });
 
   // 拖动与点击要区分开：移动超过阈值算拖动，不触发开关。
+  // 另外支持长按（600ms）打开诊断日志 —— 这条路很重要：如果初始化就失败，
+  // 面板根本不会显示，那时「日志」按钮也点不到，只有悬浮球还在。
   (function () {
     var dragging = false, moved = false, ox = 0, oy = 0, pid = null;
+    var holdTimer = null, longPressed = false;
+    function clearHold() {
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    }
     fab.addEventListener('pointerdown', function (e) {
-      dragging = true; moved = false; pid = e.pointerId;
+      dragging = true; moved = false; longPressed = false; pid = e.pointerId;
       var r = fab.getBoundingClientRect();
       ox = e.clientX - r.left; oy = e.clientY - r.top;
       try { fab.setPointerCapture(pid); } catch (_) {}
+      clearHold();
+      holdTimer = setTimeout(function () {
+        if (!moved) { longPressed = true; showLog(); }
+      }, 600);
       e.preventDefault();
     });
     fab.addEventListener('pointermove', function (e) {
       if (!dragging) return;
       var dx = Math.abs(e.clientX - (fab.getBoundingClientRect().left + ox));
       var dy = Math.abs(e.clientY - (fab.getBoundingClientRect().top + oy));
-      if (dx > 4 || dy > 4) moved = true;
+      if (dx > 4 || dy > 4) { moved = true; clearHold(); }
       fab.style.left = (e.clientX - ox) + 'px';
       fab.style.top = (e.clientY - oy) + 'px';
       fab.style.right = 'auto'; fab.style.bottom = 'auto';
@@ -138,8 +249,10 @@
     fab.addEventListener('pointerup', function (e) {
       if (!dragging) return;
       dragging = false;
+      clearHold();
       try { fab.releasePointerCapture(pid); } catch (_) {}
-      if (!moved) toggle();          // 轻点 = 切换叠加层
+      // 长按已经打开日志了，这一下不再当作切换
+      if (!moved && !longPressed) toggle();
       e.preventDefault();
     });
   })();
@@ -154,8 +267,124 @@
     document.body.appendChild(layer);
     document.body.appendChild(panel);
     document.body.appendChild(fab);
+    buildLogPane();
   }
   mount();
+
+  // ---- 日志页面 -----------------------------------------------------------
+  // 手机上没有开发者控制台，所以诊断信息必须在页面内可见且可复制。
+  // 复制走三条退路：navigator.clipboard（需要安全上下文）→
+  // document.execCommand('copy')（老 WebView）→ 全选文本让用户手动复制。
+  function buildLogPane() {
+    if (logPane) return;
+    logPane = document.createElement('div');
+    logPane.style.cssText =
+      'position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483646;' +
+      'display:none;flex-direction:column;background:#080c12;' +
+      'color:#d6e4f0;font:11px/1.45 ui-monospace,Menlo,Consolas,monospace;' +
+      'pointer-events:auto';
+    // 面板内的所有交互都不能漏给游戏
+    ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'click',
+     'wheel', 'touchstart', 'touchmove', 'touchend'].forEach(function (t) {
+      logPane.addEventListener(t, function (e) { e.stopPropagation(); }, false);
+    });
+
+    var bar = document.createElement('div');
+    bar.style.cssText =
+      'display:flex;gap:6px;align-items:center;padding:8px 10px;flex:0 0 auto;' +
+      'background:rgba(20,30,44,.98);border-bottom:1px solid rgba(255,255,255,.12)';
+    var title = document.createElement('div');
+    title.textContent = '叠加层诊断日志';
+    title.style.cssText = 'font:600 12px/1.4 system-ui,sans-serif;flex:1 1 auto';
+
+    function paneBtn(text) {
+      var b = document.createElement('button');
+      b.textContent = text;
+      b.style.cssText =
+        'flex:0 0 auto;padding:6px 10px;border-radius:6px;cursor:pointer;' +
+        'font:600 11px/1 system-ui,sans-serif;color:#eaf4ff;' +
+        'background:rgba(56,120,190,.85);border:1px solid rgba(255,255,255,.18)';
+      return b;
+    }
+    var bCopy = paneBtn('复制全部');
+    var bRefresh = paneBtn('刷新');
+    var bClear = paneBtn('清空');
+    var bClose = paneBtn('关闭');
+
+    logBody = document.createElement('pre');
+    logBody.style.cssText =
+      'margin:0;padding:10px;flex:1 1 auto;overflow:auto;white-space:pre-wrap;' +
+      'word-break:break-word;-webkit-user-select:text;user-select:text';
+
+    var hint = document.createElement('div');
+    hint.style.cssText =
+      'flex:0 0 auto;padding:8px 10px;font:11px/1.45 system-ui,sans-serif;' +
+      'color:#8fa6bd;border-top:1px solid rgba(255,255,255,.14);' +
+      // 不透明背景：日志页是半透明的，提示文字曾被下层页面内容糊住看不清
+      'background:#0b1017;position:relative;z-index:1';
+    hint.textContent = '复制后发给开发者即可定位。若复制按钮无效，长按上方文本手动选择。';
+
+    bCopy.onclick = function () {
+      var text = fullLogText();
+      var done = function (ok) {
+        bCopy.textContent = ok ? '已复制' : '已全选';
+        // 实测：WebView 里 Clipboard API 常因非安全上下文被拒，会走到全选
+        // 退路。此时必须明确告诉用户"下一步做什么"，否则看到一片蓝底
+        // 不知道已经可以长按复制了。
+        hint.textContent = ok
+            ? '已复制到剪贴板，直接粘贴发给开发者即可。'
+            : '已为你全选文本 —— 现在长按选中区域，选「复制」即可。';
+        hint.style.color = ok ? '#7fd6c0' : '#ffd479';
+        setTimeout(function () { bCopy.textContent = '复制全部'; }, 2200);
+      };
+      // 退路 1：现代 Clipboard API（要求安全上下文，WebView 里不一定可用）
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); },
+                                                 function () { legacyCopy(); });
+      } else { legacyCopy(); }
+
+      function legacyCopy() {
+        // 退路 2：execCommand（老 WebView 仍支持）
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+          document.body.appendChild(ta);
+          ta.select();
+          ta.setSelectionRange(0, text.length);
+          var ok = document.execCommand && document.execCommand('copy');
+          document.body.removeChild(ta);
+          if (ok) { done(true); return; }
+        } catch (_) {}
+        // 退路 3：把正文全选，用户长按即可复制
+        try {
+          var r = document.createRange();
+          r.selectNodeContents(logBody);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(r);
+        } catch (_) {}
+        done(false);
+      }
+    };
+    bRefresh.onclick = renderLog;
+    bClear.onclick = function () { logs.length = 0; renderLog(); };
+    bClose.onclick = function () { logPane.style.display = 'none'; };
+
+    bar.appendChild(title);
+    [bCopy, bRefresh, bClear, bClose].forEach(function (b) { bar.appendChild(b); });
+    logPane.appendChild(bar);
+    logPane.appendChild(logBody);
+    logPane.appendChild(hint);
+    document.body.appendChild(logPane);
+  }
+
+  function showLog() {
+    buildLogPane();
+    renderLog();
+    logPane.style.display = 'flex';
+  }
+  window.__miguMapOverlayShowLog = showLog;
 
   // 阻止面板上的事件流向游戏（否则拖动面板会同时拖动地图）
   ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'click',
@@ -414,11 +643,11 @@
   // ---- 定位：ORB 全图匹配（慢，低频）+ 光流跟随（快，每帧）----------------
   function fullFit(userAsked) {
     var el = findSurface();
-    if (!el) { setStatus('未找到游戏画面', 'bad'); return false; }
+    if (!el) { log('ERR', 'findSurface: 未找到 video/canvas'); setStatus('未找到游戏画面', 'bad'); return false; }
     st.surface = el;
     hookFrameCounter(el);   // 首次定位时挂上帧计数，供跟踪循环跳过静止帧
     var f = grab(el, 960);
-    if (f.err) { setStatus('画面不可读: ' + f.err, 'bad'); return false; }
+    if (f.err) { log('ERR', 'grab 失败: ' + f.err); setStatus('画面不可读: ' + f.err, 'bad'); return false; }
     if (!window.cv || !window.cv.ORB || !st.refDesc) {
       setStatus('等待识别引擎', 'warn'); return false;
     }
@@ -432,17 +661,35 @@
       var mm = new CV.DMatchVectorVector();
       bf.knnMatch(d1, st.refDesc, mm, 2);
       var src = [], dst = [];
+      // 索引必须逐个查界。DMatch 的 queryIdx/trainIdx 来自 WASM 侧，
+      // 一旦与当前 KeyPointVector 长度不符（例如底图特征被重建过、
+      // 或某次 detectAndCompute 没产生描述子），KeyPointVector.get()
+      // 会在 WASM 里越界，浏览器抛出
+      //   RuntimeError: table index is out of bounds
+      // ——这个文本不在任何 JS 源码里，所以很难靠搜索定位。
+      // 用户实测正是在开启叠加层时看到它。
+      var nQ = k1.size(), nR = st.refKp.size();
+      var skipped = 0;
       for (var i = 0; i < mm.size(); i++) {
         var m = mm.get(i);
         if (m.size() < 2) continue;
         var a = m.get(0), b = m.get(1);
         if (a.distance < 0.8 * b.distance) {
+          if (a.queryIdx < 0 || a.queryIdx >= nQ ||
+              a.trainIdx < 0 || a.trainIdx >= nR) { skipped++; continue; }
           var p = k1.get(a.queryIdx).pt, r = st.refKp.get(a.trainIdx).pt;
           src.push(p.x, p.y); dst.push(r.x, r.y);
         }
       }
+      if (skipped) {
+        // 出现即说明参照特征与描述子不同步，重建一次比继续用坏数据更安全。
+        console.warn('[map-overlay] 跳过 ' + skipped + ' 个越界匹配，重建参照特征');
+        st.refDirty = true;
+      }
       [q, d1, mask, mm].forEach(function (o) { try { o.delete(); } catch (_) {} });
       orb.delete(); bf.delete(); k1.delete();
+      log('INFO', 'ORB: 帧特征=' + nQ + ' 底图特征=' + nR +
+          ' 匹配=' + (src.length / 2) + (skipped ? ' 越界跳过=' + skipped : ''));
       if (src.length < 24) { setStatus('特征不足(' + (src.length / 2) + ')，请打开大地图', 'warn'); return false; }
       var sm = CV.matFromArray(src.length / 2, 1, CV.CV_32FC2, src);
       var dm = CV.matFromArray(dst.length / 2, 1, CV.CV_32FC2, dst);
@@ -480,7 +727,9 @@
       draw();
       return true;
     } catch (e) {
-      setStatus('定位异常: ' + (e && e.message || e), 'bad');
+      // 记录堆栈：手机上看不到控制台，没有堆栈就只能靠猜
+      var d1 = recordError('fullFit(ORB匹配)', e);
+      setStatus('定位异常: ' + d1.message, 'bad');
       return false;
     }
   }
@@ -521,7 +770,13 @@
       CV.calcOpticalFlowPyrLK(prev, cur, p0, p1, stt, err,
         new CV.Size(21, 21), 3);
       var oldPts = [], newPts = [];
-      for (var i = 0; i < stt.rows; i++) {
+      // 同样要查界：stt.rows 与 p0/p1 的 data32F 长度理论上一致，但一旦
+      // calcOpticalFlowPyrLK 因输入退化而返回尺寸不符的结果，
+      // data32F[i*2+1] 就会越界读 —— 在 WASM 堆上表现为脏数据或陷阱。
+      var n0 = p0.data32F ? p0.data32F.length : 0;
+      var n1 = p1.data32F ? p1.data32F.length : 0;
+      var lim = Math.min(stt.rows, Math.floor(n0 / 2), Math.floor(n1 / 2));
+      for (var i = 0; i < lim; i++) {
         if (stt.data[i] !== 1) continue;
         oldPts.push(p0.data32F[i * 2], p0.data32F[i * 2 + 1]);
         newPts.push(p1.data32F[i * 2], p1.data32F[i * 2 + 1]);
@@ -593,7 +848,8 @@
         setStatus('跟随中 · 帧' + st.frames + ' · 点' + okCount);
       }
     } catch (e) {
-      setStatus('跟踪异常: ' + (e && e.message || e), 'warn');
+      var d2 = recordError('trackStep(光流)', e);
+      setStatus('跟踪异常: ' + d2.message, 'warn');
     }
   }
 
@@ -708,6 +964,7 @@
     if (st.ready) { fullFit(true); return; }
     if (st.loading) return;
     st.loading = true;
+    log('INFO', 'ensureReady: 开始加载（等 opencv → 点位 → 底图特征）');
     setStatus('等待识别引擎…');
     // 先等 opencv 运行时（window.cv 初始为 Promise，必须解析），
     // 再拼底图算特征 —— 顺序颠倒会拿到 cv.ORB undefined。
@@ -738,6 +995,15 @@
       var orb = new CV.ORB(12000, 1.2, 8, 31, 0, 2, CV.ORB_HARRIS_SCORE, 31, 8);
       orb.detectAndCompute(st.refMat, new CV.Mat(), st.refKp, st.refDesc);
       orb.delete();
+      // 参照特征与描述子必须行数一致，否则匹配返回的 trainIdx 会越界，
+      // KeyPointVector.get() 在 WASM 里抛 "table index is out of bounds"。
+      // 这里在建库时就把不一致挡住，而不是等到匹配时才炸。
+      log('INFO', '底图特征: kp=' + st.refKp.size() + ' desc=' + st.refDesc.rows);
+      if (st.refDesc.rows !== st.refKp.size()) {
+        throw new Error('参照特征不一致 (kp=' + st.refKp.size() +
+                        ' desc=' + st.refDesc.rows + ')');
+      }
+      st.refDirty = false;
       st.ready = true; st.loading = false;
       setStatus('就绪，正在定位…');
       fullFit(true);
