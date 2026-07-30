@@ -1,38 +1,65 @@
-name: validate-plugins
+name: validate
+
+# 插件仓库的守门人：任何 PR / 推送都必须通过 tools/validate.py。
+# 这不只是格式检查——它校验每个大资源的 sha256、权限声明、外部主机白名单，
+# 以及"声明了 wasm 才能带 .js 资产"这类规则。没有它，一个被篡改的
+# 10MB opencv.js 可以悄悄合进 main 并下发给所有 app。
 on:
   pull_request:
-    paths: ['plugins/**', 'tools/**']
   push:
-    branches: [main]
+    branches: [ main ]
+  workflow_dispatch:
+
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Validate plugins
+        with: { python-version: '3.11' }
+
+      - name: Validate all plugins
         run: python3 tools/validate.py
-  build-index:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: validate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Rebuild index.json
-        run: python3 tools/validate.py --build-index
-      - name: Commit index.json if changed
+
+      - name: Run validator's own test suite
+        # 负向测试：证明每条护栏真的会拒绝，而不是被写成了永真。
+        run: python3 tools/test_validate.py
+
+      - name: Assert index.json matches the plugin sources
+        # index.json 是 app 实际拉取的清单。如果它和 plugins/ 下的
+        # plugin.json 不一致（例如忘了重新生成），app 会拿到过期的
+        # sha256 并把正确的资源判为被篡改。
         run: |
-          if ! git diff --quiet index.json 2>/dev/null; then
-            git config user.name 'github-actions[bot]'
-            git config user.email 'github-actions[bot]@users.noreply.github.com'
-            git add index.json
-            git commit -m 'ci: rebuild plugin index'
-            git push
-          else
-            echo 'index.json unchanged'
+          cp index.json /tmp/index.committed.json
+          python3 tools/validate.py --build-index
+          if ! diff -q /tmp/index.committed.json index.json > /dev/null; then
+            echo "::error::index.json is stale. Run: python3 tools/validate.py --build-index"
+            diff -u /tmp/index.committed.json index.json | head -40 || true
+            exit 1
           fi
+          echo "index.json is in sync with plugin sources"
+
+      - name: Verify every declared asset hash against the committed bytes
+        # 双重保险：validate.py 已经查过，这里独立再算一遍，
+        # 确保 CI 看到的字节与 plugin.json 声明一致。
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, sys
+          bad = []
+          for meta in pathlib.Path('plugins').glob('*/plugin.json'):
+              d = json.loads(meta.read_text())
+              for a in d.get('assets', []):
+                  f = meta.parent / a['path']
+                  if not f.is_file():
+                      bad.append(f'{f}: missing'); continue
+                  got = hashlib.sha256(f.read_bytes()).hexdigest()
+                  if got != a['sha256']:
+                      bad.append(f'{f}: declared {a["sha256"][:12]} got {got[:12]}')
+                  elif a.get('size') and f.stat().st_size != a['size']:
+                      bad.append(f'{f}: size {f.stat().st_size} != {a["size"]}')
+                  else:
+                      print(f'OK {f} {got[:12]} ({f.stat().st_size} bytes)')
+          if bad:
+              print('\n'.join(f'FAIL {b}' for b in bad), file=sys.stderr)
+              sys.exit(1)
+          PY
