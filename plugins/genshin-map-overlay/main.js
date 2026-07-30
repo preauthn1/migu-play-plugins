@@ -984,12 +984,46 @@
     }).then(function (ref) {
       var CV = window.cv;
       if (!CV || !CV.ORB) throw new Error('识别引擎未就绪');
-      var d = ref.ctx.getImageData(0, 0, REF_W, REF_H);
-      var n = REF_W * REF_H, grey = new Uint8Array(n);
-      for (var i = 0, j = 0; i < n; i++, j += 4) {
-        grey[i] = (d.data[j] * 299 + d.data[j + 1] * 587 + d.data[j + 2] * 114) / 1000;
+      // 这一段是内存高峰：底图 6144x4096 = 2500 万像素。
+      // getImageData 一次就要 100MB 的 RGBA，再加灰度副本和 WASM 侧的 Mat。
+      // 手机 WebView 的堆远小于桌面，之前用户在这里拿到
+      // "table index is out of bounds"（WASM 陷阱），而同样代码在 Node
+      // （4GB 堆）里 6144x6144 都能跑通 —— 差别就是内存。
+      // 所以分块读取，并且每步都记日志，好让失败点在日志里一目了然。
+      setStatus('提取特征…');
+      log('INFO', 'ref 尺寸 ' + REF_W + 'x' + REF_H +
+          '（' + (REF_W * REF_H / 1e6).toFixed(1) + 'M px，RGBA 约 ' +
+          (REF_W * REF_H * 4 / 1048576).toFixed(0) + 'MB）');
+      var n = REF_W * REF_H, grey;
+      try {
+        grey = new Uint8Array(n);
+      } catch (e) {
+        throw new Error('内存不足：无法分配 ' + (n / 1048576).toFixed(0) +
+                        'MB 灰度缓冲（' + (e && e.message || e) + '）');
       }
+      // 按行带分块 getImageData：一次性取 100MB 在移动端极易失败，
+      // 分块后峰值只有 REF_W * band * 4。
+      var band = 256, done = 0;
+      for (var y0 = 0; y0 < REF_H; y0 += band) {
+        var hh = Math.min(band, REF_H - y0);
+        var d;
+        try {
+          d = ref.ctx.getImageData(0, y0, REF_W, hh);
+        } catch (e) {
+          throw new Error('读取底图失败（y=' + y0 + '，已完成 ' +
+                          (done / 1e6).toFixed(1) + 'M px）: ' +
+                          (e && e.message || e));
+        }
+        var px = d.data, base = y0 * REF_W, m = hh * REF_W;
+        for (var i = 0, j = 0; i < m; i++, j += 4) {
+          grey[base + i] =
+              (px[j] * 299 + px[j + 1] * 587 + px[j + 2] * 114) / 1000;
+        }
+        done += m;
+      }
+      log('INFO', '灰度提取完成 ' + (done / 1e6).toFixed(1) + 'M px');
       st.refMat = CV.matFromArray(REF_H, REF_W, CV.CV_8UC1, grey);
+      log('INFO', 'refMat 建立 ' + st.refMat.rows + 'x' + st.refMat.cols);
       st.refKp = new CV.KeyPointVector();
       st.refDesc = new CV.Mat();
       var orb = new CV.ORB(12000, 1.2, 8, 31, 0, 2, CV.ORB_HARRIS_SCORE, 31, 8);
