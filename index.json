@@ -85,7 +85,7 @@
       "match": [
         "*"
       ],
-      "minAppVersion": "2.16.0",
+      "minAppVersion": "2.15.1",
       "homepage": "https://github.com/preauthn1/migu-play-plugins",
       "permissions": [
         "frame-capture",
