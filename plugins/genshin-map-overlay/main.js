@@ -48,7 +48,7 @@
     'display:flex;align-items:center;gap:6px;cursor:move;font-weight:600';
   head.innerHTML = '<span style="flex:1">点位列表</span>';
   var btnFold = mkBtn('—', '折叠列表');
-  var btnClose = mkBtn('✕', '关闭叠加 (F8)');
+  var btnClose = mkBtn('✕', '关闭叠加（桌面端 F8）');
   head.appendChild(btnFold); head.appendChild(btnClose);
 
   var status = document.createElement('div');
@@ -88,10 +88,72 @@
     return b;
   }
 
+  // ---- 移动端入口：一个可拖动的悬浮按钮 ------------------------------------
+  // 手机上没有 F8。之前只绑了 keydown，等于叠加层在 Android 上根本打不开
+  // （面板默认 display:none），功能形同不存在。悬浮球是唯一可靠的触摸入口：
+  // 云游戏画面本身要接收滑动/点击，不能靠"长按画面"之类的手势去抢输入。
+  var fab = document.createElement('div');
+  fab.textContent = '图';
+  fab.title = '原神地图叠加（桌面端快捷键 F8）';
+  fab.style.cssText = 'position:fixed;right:14px;bottom:96px;z-index:2147483500;' +
+    'width:44px;height:44px;border-radius:50%;display:flex;align-items:center;' +
+    'justify-content:center;font:600 15px/1 system-ui,-apple-system,sans-serif;' +
+    'color:#eaf4ff;background:rgba(18,26,40,.82);' +
+    'border:1px solid rgba(255,255,255,.22);' +
+    'box-shadow:0 4px 14px rgba(0,0,0,.45);' +
+    'pointer-events:auto;user-select:none;-webkit-user-select:none;' +
+    'touch-action:none;cursor:pointer';
+
+  // 悬浮球自身的事件绝不能冒泡到游戏，否则点它会同时操作游戏。
+  //
+  // 关键：这里必须用**冒泡阶段**（第三参数 false）。用捕获阶段
+  // (true) 会在事件到达元素之前就 stopPropagation，把下面那套
+  // pointerdown/up 开关逻辑一起掐死 —— 实测表现为"点了没反应"，
+  // 且只有 capture handler 被触发、bubble handler 从不执行。
+  ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup',
+   'click', 'touchstart', 'touchmove', 'touchend'].forEach(function (t) {
+    fab.addEventListener(t, function (e) { e.stopPropagation(); }, false);
+  });
+
+  // 拖动与点击要区分开：移动超过阈值算拖动，不触发开关。
+  (function () {
+    var dragging = false, moved = false, ox = 0, oy = 0, pid = null;
+    fab.addEventListener('pointerdown', function (e) {
+      dragging = true; moved = false; pid = e.pointerId;
+      var r = fab.getBoundingClientRect();
+      ox = e.clientX - r.left; oy = e.clientY - r.top;
+      try { fab.setPointerCapture(pid); } catch (_) {}
+      e.preventDefault();
+    });
+    fab.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      var dx = Math.abs(e.clientX - (fab.getBoundingClientRect().left + ox));
+      var dy = Math.abs(e.clientY - (fab.getBoundingClientRect().top + oy));
+      if (dx > 4 || dy > 4) moved = true;
+      fab.style.left = (e.clientX - ox) + 'px';
+      fab.style.top = (e.clientY - oy) + 'px';
+      fab.style.right = 'auto'; fab.style.bottom = 'auto';
+      e.preventDefault();
+    });
+    fab.addEventListener('pointerup', function (e) {
+      if (!dragging) return;
+      dragging = false;
+      try { fab.releasePointerCapture(pid); } catch (_) {}
+      if (!moved) toggle();          // 轻点 = 切换叠加层
+      e.preventDefault();
+    });
+  })();
+
+  function syncFab() {
+    fab.style.background = st.on
+        ? 'rgba(56,120,190,.92)' : 'rgba(18,26,40,.82)';
+  }
+
   function mount() {
     if (!document.body) { setTimeout(mount, 250); return; }
     document.body.appendChild(layer);
     document.body.appendChild(panel);
+    document.body.appendChild(fab);
   }
   mount();
 
@@ -689,6 +751,7 @@
     st.on = (typeof force === 'boolean') ? force : !st.on;
     layer.style.display = st.on ? 'block' : 'none';
     panel.style.display = st.on ? 'flex' : 'none';
+    syncFab();
     if (st.on) {
       ensureReady();
       if (!st.raf) st.raf = requestAnimationFrame(loop);
@@ -698,7 +761,8 @@
     }
   }
 
-  // F8 切换 / F9 强制重定位。宿主桌面端也会把这两个键转发进页面。
+  // 桌面端快捷键（F8 切换 / F9 重定位）。这是**额外**入口，不是唯一入口 ——
+  // 手机上没有这两个键，触摸端靠上面那个悬浮球开关。
   window.addEventListener('keydown', function (e) {
     if (e.key === 'F8') { e.preventDefault(); toggle(); }
     else if (e.key === 'F9' && st.on) { e.preventDefault(); fullFit(true); }
