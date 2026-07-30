@@ -1,9 +1,15 @@
 name: validate-plugins
+
+# 插件仓库的守门人。这些插件会被已发布的 app 拉取并执行，其中一个还携带
+# 10MB 的 WASM 胶水层，所以校验必须比"看一眼 diff"更硬：
+# 一个被篡改的资源如果合进 main，会直接下发给所有安装。
 on:
   pull_request:
-    paths: ['plugins/**', 'tools/**']
+    paths: ['plugins/**', 'tools/**', '.github/workflows/**']
   push:
     branches: [main]
+  workflow_dispatch:
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -11,8 +17,61 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
+
       - name: Validate plugins
         run: python3 tools/validate.py
+
+      - name: Run the validator's own test suite
+        # 负向测试：证明每条护栏真的会拒绝，而不是被写成了永真。
+        # 实测过它会咬人——给 points.json 追加一个换行就同时触发
+        # sha256 与 size 两条失败。
+        run: python3 tools/test_validate.py
+
+      - name: Re-hash every declared asset independently
+        # 不信任 validator 自己的记账，独立再算一遍：确保 CI 检出的字节
+        # 与 plugin.json 声明一致。App 侧下载后会做同样的校验，两边
+        # 对不上就意味着用户那边会把正确资源判为被篡改。
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, sys
+          bad = []
+          for meta in pathlib.Path('plugins').glob('*/plugin.json'):
+              d = json.loads(meta.read_text())
+              for a in d.get('assets', []):
+                  f = meta.parent / a['path']
+                  if not f.is_file():
+                      bad.append(f'{f}: missing file'); continue
+                  got = hashlib.sha256(f.read_bytes()).hexdigest()
+                  size = f.stat().st_size
+                  if got != a['sha256']:
+                      bad.append(f'{f}: declared {a["sha256"][:12]} got {got[:12]}')
+                  elif a.get('size') and size != a['size']:
+                      bad.append(f'{f}: size {size} != declared {a["size"]}')
+                  else:
+                      print(f'OK {f} {got[:12]} ({size} bytes)')
+          if bad:
+              print('\n'.join(f'FAIL {b}' for b in bad), file=sys.stderr)
+              sys.exit(1)
+          print('all declared assets match the committed bytes')
+          PY
+
+      - name: Warn when index.json is stale (PR only)
+        # main 上有 build-index job 会自动重建并提交 index.json，所以这里
+        # 只在 PR 上提示、不失败——否则会和那套自动机制互相打架。
+        # 提示的价值：让提交者知道 app 拉到的清单还不包含这次改动。
+        if: github.event_name == 'pull_request'
+        run: |
+          cp index.json /tmp/index.committed.json
+          python3 tools/validate.py --build-index
+          if diff -q /tmp/index.committed.json index.json > /dev/null; then
+            echo "index.json is in sync with plugin sources"
+          else
+            echo "::warning::index.json is stale; main's build-index job will regenerate it after merge"
+            diff -u /tmp/index.committed.json index.json | head -30 || true
+          fi
+          # 还原，避免把重建结果留在工作区影响后续步骤
+          cp /tmp/index.committed.json index.json
+
   build-index:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: validate
