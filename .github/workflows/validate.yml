@@ -1,13 +1,13 @@
-name: validate
+name: validate-plugins
 
-# 插件仓库的守门人：任何 PR / 推送都必须通过 tools/validate.py。
-# 这不只是格式检查——它校验每个大资源的 sha256、权限声明、外部主机白名单，
-# 以及"声明了 wasm 才能带 .js 资产"这类规则。没有它，一个被篡改的
-# 10MB opencv.js 可以悄悄合进 main 并下发给所有 app。
+# 插件仓库的守门人。这些插件会被已发布的 app 拉取并执行，其中一个还携带
+# 10MB 的 WASM 胶水层，所以校验必须比"看一眼 diff"更硬：
+# 一个被篡改的资源如果合进 main，会直接下发给所有安装。
 on:
   pull_request:
+    paths: ['plugins/**', 'tools/**', '.github/workflows/**']
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -16,32 +16,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
+        with: { python-version: '3.12' }
 
-      - name: Validate all plugins
+      - name: Validate plugins
         run: python3 tools/validate.py
 
-      - name: Run validator's own test suite
+      - name: Run the validator's own test suite
         # 负向测试：证明每条护栏真的会拒绝，而不是被写成了永真。
+        # 实测过它会咬人——给 points.json 追加一个换行就同时触发
+        # sha256 与 size 两条失败。
         run: python3 tools/test_validate.py
 
-      - name: Assert index.json matches the plugin sources
-        # index.json 是 app 实际拉取的清单。如果它和 plugins/ 下的
-        # plugin.json 不一致（例如忘了重新生成），app 会拿到过期的
-        # sha256 并把正确的资源判为被篡改。
-        run: |
-          cp index.json /tmp/index.committed.json
-          python3 tools/validate.py --build-index
-          if ! diff -q /tmp/index.committed.json index.json > /dev/null; then
-            echo "::error::index.json is stale. Run: python3 tools/validate.py --build-index"
-            diff -u /tmp/index.committed.json index.json | head -40 || true
-            exit 1
-          fi
-          echo "index.json is in sync with plugin sources"
-
-      - name: Verify every declared asset hash against the committed bytes
-        # 双重保险：validate.py 已经查过，这里独立再算一遍，
-        # 确保 CI 看到的字节与 plugin.json 声明一致。
+      - name: Re-hash every declared asset independently
+        # 不信任 validator 自己的记账，独立再算一遍：确保 CI 检出的字节
+        # 与 plugin.json 声明一致。App 侧下载后会做同样的校验，两边
+        # 对不上就意味着用户那边会把正确资源判为被篡改。
         run: |
           python3 - <<'PY'
           import hashlib, json, pathlib, sys
@@ -51,15 +40,58 @@ jobs:
               for a in d.get('assets', []):
                   f = meta.parent / a['path']
                   if not f.is_file():
-                      bad.append(f'{f}: missing'); continue
+                      bad.append(f'{f}: missing file'); continue
                   got = hashlib.sha256(f.read_bytes()).hexdigest()
+                  size = f.stat().st_size
                   if got != a['sha256']:
                       bad.append(f'{f}: declared {a["sha256"][:12]} got {got[:12]}')
-                  elif a.get('size') and f.stat().st_size != a['size']:
-                      bad.append(f'{f}: size {f.stat().st_size} != {a["size"]}')
+                  elif a.get('size') and size != a['size']:
+                      bad.append(f'{f}: size {size} != declared {a["size"]}')
                   else:
-                      print(f'OK {f} {got[:12]} ({f.stat().st_size} bytes)')
+                      print(f'OK {f} {got[:12]} ({size} bytes)')
           if bad:
               print('\n'.join(f'FAIL {b}' for b in bad), file=sys.stderr)
               sys.exit(1)
+          print('all declared assets match the committed bytes')
           PY
+
+      - name: Warn when index.json is stale (PR only)
+        # main 上有 build-index job 会自动重建并提交 index.json，所以这里
+        # 只在 PR 上提示、不失败——否则会和那套自动机制互相打架。
+        # 提示的价值：让提交者知道 app 拉到的清单还不包含这次改动。
+        if: github.event_name == 'pull_request'
+        run: |
+          cp index.json /tmp/index.committed.json
+          python3 tools/validate.py --build-index
+          if diff -q /tmp/index.committed.json index.json > /dev/null; then
+            echo "index.json is in sync with plugin sources"
+          else
+            echo "::warning::index.json is stale; main's build-index job will regenerate it after merge"
+            diff -u /tmp/index.committed.json index.json | head -30 || true
+          fi
+          # 还原，避免把重建结果留在工作区影响后续步骤
+          cp /tmp/index.committed.json index.json
+
+  build-index:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Rebuild index.json
+        run: python3 tools/validate.py --build-index
+      - name: Commit index.json if changed
+        run: |
+          if ! git diff --quiet index.json 2>/dev/null; then
+            git config user.name 'github-actions[bot]'
+            git config user.email 'github-actions[bot]@users.noreply.github.com'
+            git add index.json
+            git commit -m 'ci: rebuild plugin index'
+            git push
+          else
+            echo 'index.json unchanged'
+          fi
