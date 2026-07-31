@@ -43,7 +43,7 @@
     if (typeof e === 'number') {
       msg = 'WASM 异常 #' + e;
       try {
-        var CV = window.cv;
+        var CV = CVPIN || window.cv;
         if (CV && typeof CV.getExceptionMessage === 'function') {
           var dec = CV.getExceptionMessage(e);
           if (dec) msg += ': ' + dec;
@@ -75,7 +75,7 @@
   });
 
   function envInfo() {
-    var CV = window.cv;
+    var CV = CVPIN || window.cv;
     var lines = [
       '=== 环境 ===',
       'UA: ' + navigator.userAgent,
@@ -117,7 +117,7 @@
   }
 
 
-  var PLUGIN_VER = '0.4.0';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.5.0';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -595,10 +595,19 @@
   // 所以绝不能拿到 window.cv 就当模块用 —— 必须先解析。
   // 同时兼容旧构建的 onRuntimeInitialized 回调与直接可用两种形态。
   var cvReady = null;         // Promise<boolean>
+  var CVPIN = null;           // 第一次就绪的 cv 实例，之后一律用它
   function ensureCv() {
     if (cvReady) return cvReady;
+    // 记住第一次解析出的 cv 实例。宿主若把 opencv.js 注入两次，emscripten
+    // 会建第二个 WASM 实例并替换 window.cv —— 用实例 A 造的 Mat 去调实例 B
+    // 的函数，函数表索引就是无意义的，运行时抛
+    // "table index is out of bounds"。用户真机日志里出现过两条相隔 3 秒的
+    // `inject 4 script(s)`，正是这种情况（宿主侧已修，这里再兜一层）。
     cvReady = new Promise(function (resolve) {
-      var give = function () { resolve(!!(window.cv && window.cv.ORB)); };
+      var give = function () {
+        if (window.cv && window.cv.ORB && !CVPIN) CVPIN = window.cv;
+        resolve(!!(CVPIN && CVPIN.ORB));
+      };
       if (!window.cv) {
         // 资源尚未注入：轮询等待宿主注入完成（切换开关的瞬间可能还没到）
         var waited = 0;
@@ -621,7 +630,8 @@
         if (m && typeof m.then === 'function') {
           m.then(function (mod) {
             if (mod) window.cv = mod;
-            res(!!(window.cv && window.cv.ORB));
+            if (window.cv && window.cv.ORB && !CVPIN) CVPIN = window.cv;
+            res(!!(CVPIN && CVPIN.ORB));
           }).catch(function () { res(false); });
           return;
         }
@@ -629,13 +639,16 @@
         var done = false;
         try {
           m.onRuntimeInitialized = function () {
-            if (!done) { done = true; res(!!(window.cv && window.cv.ORB)); }
+            if (!done) { done = true;
+              if (window.cv && window.cv.ORB && !CVPIN) CVPIN = window.cv;
+              res(!!(CVPIN && CVPIN.ORB)); }
           };
         } catch (_) {}
         var t = 0;
         var iv = setInterval(function () {
           t += 150;
           if (window.cv && window.cv.ORB) {
+            if (!CVPIN) CVPIN = window.cv;
             clearInterval(iv);
             if (!done) { done = true; res(true); }
           } else if (t > 30000) {
@@ -677,11 +690,11 @@
     hookFrameCounter(el);   // 首次定位时挂上帧计数，供跟踪循环跳过静止帧
     var f = grab(el, 960);
     if (f.err) { log('ERR', 'grab 失败: ' + f.err); setStatus('画面不可读: ' + f.err, 'bad'); return false; }
-    if (!window.cv || !window.cv.ORB || !st.refDesc) {
+    if (!CVPIN || !CVPIN.ORB || !st.refDesc) {
       setStatus('等待识别引擎', 'warn'); return false;
     }
     try {
-      var CV = window.cv;
+      var CV = CVPIN || window.cv;
       var q = CV.matFromArray(f.h, f.w, CV.CV_8UC1, f.grey);
       var orb = new CV.ORB(8000, 1.2, 8, 31, 0, 2, CV.ORB_HARRIS_SCORE, 31, 8);
       var k1 = new CV.KeyPointVector(), d1 = new CV.Mat(), mask = new CV.Mat();
@@ -782,8 +795,8 @@
   // 注意：不要用 canvas.captureStream() 自造的流去估这个成本——那种流
   // 实测只有 0.24ms/帧，比真实串流快 50 倍，会得出错误的性能结论。
   function trackStep() {
-    if (!st.on || !st.fit || !st.surface || !window.cv) return;
-    var CV = window.cv;
+    if (!st.on || !st.fit || !st.surface || !CVPIN) return;
+    var CV = CVPIN;
     var f = grab(st.surface, 384);
     if (f.err) { setStatus('画面不可读: ' + f.err, 'bad'); st.tracking = false; return; }
     if (!st.prevGrey || st.prevW !== f.w || st.prevH !== f.h) {
@@ -1053,7 +1066,7 @@
       setStatus('拼接底图…');
       return buildRef();
     }).then(function (ref) {
-      var CV = window.cv;
+      var CV = CVPIN || window.cv;
       if (!CV || !CV.ORB) throw new Error('识别引擎未就绪');
       // 这一段是内存高峰：底图 6144x4096 = 2500 万像素。
       // getImageData 一次就要 100MB 的 RGBA，再加灰度副本和 WASM 侧的 Mat。
