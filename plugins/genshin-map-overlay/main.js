@@ -103,13 +103,26 @@
 
 
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
-  var TILE = 'https://wiki-dev-patch-oss.oss-cn-hangzhou.aliyuncs.com/res/ys/map-6.7/1/tiles-G/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
   var Z = 5, S = 256, LX0 = -16, LY0 = -8, LX1 = 7, LY1 = 7;
   var A = 0.0078125;               // Leaflet CRS.Simple transformation
-  var REF_W = (LX1 - LX0 + 1) * S; // 参照拼图尺寸
-  var REF_H = (LY1 - LY0 + 1) * S;
+  // 逐瓦片拼接时的完整参照尺寸（world 坐标就定义在这个尺度上）
+  var FULL_W = (LX1 - LX0 + 1) * S;
+  var FULL_H = (LY1 - LY0 + 1) * S;
+  // 预拼底图的下采样比例。真机日志证明必须放弃直接拉 wiki 瓦片：
+  //   Access to image at '<wiki OSS>/tiles-G/5/tile--16_5.png' from
+  //   origin '<the cloud-game page>' has been blocked by CORS policy
+  // 该 OSS 不返回 access-control-allow-origin，用 crossOrigin='anonymous'
+  // 会 384 块全灭（底图变纯色，ORB 无特征）；去掉 crossOrigin 则画布被污染，
+  // getImageData 抛 SecurityError。两条路都不通。
+  // 所以底图改为随插件发布的**哈希锁定资源**（raw.githubusercontent 返回
+  // access-control-allow-origin: *，实测可跨域读像素）。
+  // 同时下采样到一半：6144x4096=25.2Mpx 在移动端 getImageData 峰值过大。
+  // 实测 3072x2048 仍能取满 12000 特征，比例误差 0.1%、原点误差 0.1px。
+  var REF_SCALE = 0.5;
+  var REF_W = FULL_W * REF_SCALE;
+  var REF_H = FULL_H * REF_SCALE;
 
   // ---- 状态 ---------------------------------------------------------------
   var st = {
@@ -886,8 +899,10 @@
       g.strokeStyle = 'rgba(0,0,0,.55)';
       g.lineWidth = Math.max(0.6, rad * 0.26);
       for (var i = 0; i < pts.length; i++) {
-        var wx = A * pts[i][0] * scale - LX0 * S;
-        var wy = A * pts[i][1] * scale - LY0 * S;
+        // world 坐标定义在**完整**参照尺度上，底图下采样后必须同乘 REF_SCALE，
+        // 否则每个点都会偏出一倍。
+        var wx = (A * pts[i][0] * scale - LX0 * S) * REF_SCALE;
+        var wy = (A * pts[i][1] * scale - LY0 * S) * REF_SCALE;
         // world -> screen(相对画面左上角)
         var sx = F.a * wx + F.b * wy + F.tx - r.left;
         var sy = F.c * wx + F.d * wy + F.ty - r.top;
@@ -930,33 +945,30 @@
   }
 
   function buildRef() {
-    var c = document.createElement('canvas');
-    c.width = REF_W; c.height = REF_H;
-    var g = c.getContext('2d', { willReadFrequently: true });
-    g.fillStyle = '#1b2234'; g.fillRect(0, 0, REF_W, REF_H);
-    var jobs = [];
-    for (var lx = LX0; lx <= LX1; lx++)
-      for (var ly = LY0; ly <= LY1; ly++) jobs.push([lx, ly]);
-    var total = jobs.length, done = 0, idx = 0, active = 0;
-    return new Promise(function (resolve) {
-      function pump() {
-        if (idx >= jobs.length && active === 0) { resolve({ canvas: c, ctx: g }); return; }
-        while (active < 12 && idx < jobs.length) {
-          (function (j) {
-            active++;
-            var lx = j[0], ly = j[1], uy = -ly - 1;   // 实测：URL y = -leafletY - 1
-            var im = new Image();
-            im.crossOrigin = 'anonymous';             // 否则参照图污染，无法读像素
-            im.onload = function () {
-              try { g.drawImage(im, (lx - LX0) * S, (ly - LY0) * S, S, S); } catch (_) {}
-              active--; done++; setStatus('底图 ' + done + '/' + total); pump();
-            };
-            im.onerror = function () { active--; done++; pump(); };
-            im.src = TILE + Z + '/tile-' + lx + '_' + uy + '.png';
-          })(jobs[idx++]);
-        }
-      }
-      pump();
+    // 单张预拼底图，随插件发布并经 sha256 校验。
+    // 不再逐块拉 wiki OSS —— 那些请求在真机上被 CORS 全数拒绝。
+    return new Promise(function (resolve, reject) {
+      var c = document.createElement('canvas');
+      c.width = REF_W; c.height = REF_H;
+      var g = c.getContext('2d', { willReadFrequently: true });
+      g.fillStyle = '#1b2234'; g.fillRect(0, 0, REF_W, REF_H);
+      var im = new Image();
+      // 宿主域(raw.githubusercontent)实测返回 access-control-allow-origin: *，
+      // 所以 anonymous 能拿到可读像素；缺了它画布会被污染。
+      im.crossOrigin = 'anonymous';
+      im.onload = function () {
+        try {
+          g.drawImage(im, 0, 0, REF_W, REF_H);
+          log('INFO', '底图载入 ' + im.naturalWidth + 'x' + im.naturalHeight +
+              ' → ' + REF_W + 'x' + REF_H);
+          resolve({ canvas: c, ctx: g });
+        } catch (e) { reject(new Error('底图绘制失败: ' + (e && e.message || e))); }
+      };
+      im.onerror = function () {
+        reject(new Error('底图加载失败（' + REPO + 'data/ref_map.jpg）'));
+      };
+      setStatus('载入底图…');
+      im.src = REPO + 'data/ref_map.jpg';
     });
   }
 

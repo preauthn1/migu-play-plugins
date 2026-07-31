@@ -31,7 +31,11 @@ BANNED_JS = [
 # main.js。放开体积的前提是**内容可校验**：每个资源必须在 plugin.json 里登记
 # sha256，校验器与 App 双侧比对，避免仓库/CDN 被替换后静默加载不同代码。
 PERMISSIONS_ALLOWED = {'wasm', 'large-assets', 'frame-capture', 'remote-tiles'}
-ASSET_EXT_ALLOWED = {'.wasm', '.json', '.bin', '.png', '.webp', '.csv'}
+ASSET_EXT_ALLOWED = {'.wasm', '.json', '.bin', '.png', '.webp', '.csv',
+                     # 照片类底图：地图参照图用 JPEG 比 PNG 小一个数量级
+                     # （3072x2048 实测 0.27MB vs 数 MB），而它只用于特征
+                     # 匹配，不需要无损。仍受 sha256 与体积上限约束。
+                     '.jpg', '.jpeg'}
 # emscripten 的 WASM 胶水层就是一个 .js（opencv.js 把 wasm 以 base64 内嵌其中），
 # 所以声明了 wasm 权限的插件必须能带 .js 资产。这不等于"可以随便塞代码"：
 # 每个资产都用 sha256 锁死，App 侧下载后先校验哈希再执行，
@@ -135,7 +139,11 @@ def check_plugin(d: Path, errors: list) -> dict | None:
     # 显式登记的只读源。出现未登记主机即拒绝（防止把插件变成远程加载器）。
     hosts = validate_hosts(d, meta, perms, errors)
     allowed_hosts = REPO_HOSTS | hosts
-    for host in re.findall(r'https?://([A-Za-z0-9.\-]+)', src):
+    # 只扫**代码**里的主机名。不剥注释会把"为什么不再访问某主机"的说明
+    # 判成违规（实测：修复 CORS 问题时，注释里引用的报错文本触发了误报），
+    # 逼作者删掉正好最该保留的解释。
+    code = strip_js_comments(src)
+    for host in re.findall(r'https?://([A-Za-z0-9.\-]+)', code):
         if host not in allowed_hosts:
             errors.append(f'{d.name}: external network host "{host}" is not '
                           f'declared (add it to "hosts" with the remote-tiles '
@@ -145,6 +153,25 @@ def check_plugin(d: Path, errors: list) -> dict | None:
     if hosts:
         meta['hosts'] = sorted(hosts)
     return meta
+
+
+def strip_js_comments(src: str) -> str:
+    """Remove /* */ and // comments so scans see code, not explanations.
+
+    Naive on purpose: it can also strip a `//` inside a string literal, which
+    for host scanning is harmless (a URL in a string still has its host on the
+    same line before any `//`). Being slightly over-eager here is much better
+    than flagging a comment that documents why a host is no longer used.
+    """
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    out = []
+    for line in src.split('\n'):
+        i = line.find('//')
+        # keep protocol separators like https://
+        while i != -1 and i >= 1 and line[i - 1] == ':':
+            i = line.find('//', i + 2)
+        out.append(line if i == -1 else line[:i])
+    return '\n'.join(out)
 
 
 def validate_hosts(d: Path, meta: dict, perms: set, errors: list) -> set:

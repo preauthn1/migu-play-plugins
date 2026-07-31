@@ -90,7 +90,6 @@
       "permissions": [
         "frame-capture",
         "large-assets",
-        "remote-tiles",
         "wasm"
       ],
       "assets": [
@@ -103,6 +102,11 @@
           "path": "data/points.json",
           "sha256": "ebd018cf982d6661fef86fa4543e7b695d587720e424900976804acb28cf6127",
           "size": 117852
+        },
+        {
+          "path": "data/ref_map.jpg",
+          "sha256": "518b348d8ef5801921dbd7c508507583682f3fb0ff8bca339a7a31d9c3b35d42",
+          "size": 287205
         }
       ],
       "script": "plugins/genshin-map-overlay/main.js"
