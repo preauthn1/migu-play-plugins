@@ -36,7 +36,22 @@
   }
 
   function recordError(where, e) {
-    var msg = (e && e.message) ? e.message : String(e);
+    // emscripten 抛出的 C++ 异常在 JS 侧是一个**裸指针数值**（实测 7030256，
+    // 真机见过 7084592），既无 message 也无 stack。必须解码，否则日志里只有
+    // 一串数字，无从下手 —— 这正是之前几轮定位失败的原因。
+    var msg;
+    if (typeof e === 'number') {
+      msg = 'WASM 异常 #' + e;
+      try {
+        var CV = window.cv;
+        if (CV && typeof CV.getExceptionMessage === 'function') {
+          var dec = CV.getExceptionMessage(e);
+          if (dec) msg += ': ' + dec;
+        }
+      } catch (_) {}
+    } else {
+      msg = (e && e.message) ? e.message : String(e);
+    }
     var stack = (e && e.stack) ? String(e.stack) : '(无堆栈)';
     lastError = { where: where, message: msg, stack: stack, at: stamp() };
     window.__miguMapOverlayLastError = lastError;
@@ -102,6 +117,7 @@
   }
 
 
+  var PLUGIN_VER = '0.3.0';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -672,6 +688,15 @@
       orb.detectAndCompute(q, mask, k1, d1);
       var bf = new CV.BFMatcher(CV.NORM_HAMMING, false);
       var mm = new CV.DMatchVectorVector();
+      // 两侧描述子都必须非空。空描述子进 knnMatch 会抛裸指针数值，
+      // 表现为无堆栈的神秘错误（实测复现：7030256）。
+      if (!d1 || d1.rows === 0 || d1.empty() ||
+          !st.refDesc || st.refDesc.rows === 0 || st.refDesc.empty()) {
+        [q, d1, mask, mm].forEach(function (o) { try { o.delete(); } catch (_) {} });
+        orb.delete(); bf.delete(); k1.delete();
+        setStatus('画面无可用特征（请打开大地图）', 'warn');
+        return false;
+      }
       bf.knnMatch(d1, st.refDesc, mm, 2);
       var src = [], dst = [];
       // 索引必须逐个查界。DMatch 的 queryIdx/trainIdx 来自 WASM 侧，
@@ -938,6 +963,11 @@
 
   // ---- 资源加载 ----------------------------------------------------------
   function loadPoints() {
+    var A = window.__miguPluginAssets || {};
+    if (A['data/points.json']) {
+      try { return Promise.resolve(JSON.parse(A['data/points.json'])); }
+      catch (e) { return Promise.reject(new Error('点位数据解析失败: ' + e.message)); }
+    }
     return fetch(REPO + 'data/points.json').then(function (r) {
       if (!r.ok) throw new Error('points HTTP ' + r.status);
       return r.json();
@@ -968,7 +998,10 @@
         reject(new Error('底图加载失败（' + REPO + 'data/ref_map.jpg）'));
       };
       setStatus('载入底图…');
-      im.src = REPO + 'data/ref_map.jpg';
+      // 优先用宿主注入的已校验资源（data: URL，同源不会污染画布，
+      // 也不依赖任何第三方主机的 CORS 头）；独立测试时回退到 REPO。
+      var A = window.__miguPluginAssets || {};
+      im.src = A['data/ref_map.jpg'] || (REPO + 'data/ref_map.jpg');
     });
   }
 
@@ -976,7 +1009,7 @@
     if (st.ready) { fullFit(true); return; }
     if (st.loading) return;
     st.loading = true;
-    log('INFO', 'ensureReady: 开始加载（等 opencv → 点位 → 底图特征）');
+    log('INFO', 'ensureReady v' + PLUGIN_VER + ': 开始加载（等 opencv → 点位 → 底图特征）');
     setStatus('等待识别引擎…');
     // 先等 opencv 运行时（window.cv 初始为 Promise，必须解析），
     // 再拼底图算特征 —— 顺序颠倒会拿到 cv.ORB undefined。
@@ -1045,6 +1078,14 @@
       // KeyPointVector.get() 在 WASM 里抛 "table index is out of bounds"。
       // 这里在建库时就把不一致挡住，而不是等到匹配时才炸。
       log('INFO', '底图特征: kp=' + st.refKp.size() + ' desc=' + st.refDesc.rows);
+      // 参照特征必须非空，否则后续 knnMatch 会在 WASM 里抛出一个**裸数字**
+      // （emscripten 异常指针，实测 7030256 / 真机 7084592），既没有堆栈也
+      // 不是可读文本 —— 这正是先前那些莫名错误（含 "table index is out of
+      // bounds"）的来源。底图取不到时要在这里明确失败，而不是带着空描述子
+      // 继续走下去。
+      if (st.refKp.size() === 0 || st.refDesc.rows === 0 || st.refDesc.empty()) {
+        throw new Error('底图无特征（kp=0）——底图可能未加载成功');
+      }
       if (st.refDesc.rows !== st.refKp.size()) {
         throw new Error('参照特征不一致 (kp=' + st.refKp.size() +
                         ' desc=' + st.refDesc.rows + ')');
