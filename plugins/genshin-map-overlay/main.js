@@ -117,7 +117,7 @@
   }
 
 
-  var PLUGIN_VER = '0.3.0';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.4.0';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -923,6 +923,11 @@
       g.fillStyle = col;
       g.strokeStyle = 'rgba(0,0,0,.55)';
       g.lineWidth = Math.max(0.6, rad * 0.26);
+      // 批量成一条路径再 fill/stroke。逐点 beginPath+arc+fill+stroke 是每点
+      // 4 次 canvas 调用，实测 7118 点每帧中位 9.2ms、P95 18.3ms，超过一帧
+      // 预算的一半并把 rAF 拖到 4.4fps。同色点共用一条路径后调用数降到 2 次。
+      g.beginPath();
+      var batched = 0;
       for (var i = 0; i < pts.length; i++) {
         // world 坐标定义在**完整**参照尺度上，底图下采样后必须同乘 REF_SCALE，
         // 否则每个点都会偏出一倍。
@@ -932,10 +937,13 @@
         var sx = F.a * wx + F.b * wy + F.tx - r.left;
         var sy = F.c * wx + F.d * wy + F.ty - r.top;
         if (sx < -12 || sy < -12 || sx > cw + 12 || sy > ch + 12) continue;
-        g.beginPath(); g.arc(sx, sy, rad, 0, 6.2832); g.fill(); g.stroke();
-        shown++;
+        g.moveTo(sx + rad, sy);          // moveTo 断开子路径，避免连线
+        g.arc(sx, sy, rad, 0, 6.2832);
+        shown++; batched++;
       }
+      if (batched) { g.fill(); g.stroke(); }
     }
+    st.shown = shown;
     g.globalAlpha = 1;
     if (!st.tracking) setStatus(st.quality);
   }
@@ -946,6 +954,22 @@
   // 下快速拖动有约 15px 滞后）。所以按"是否正在动"自适应：检测到明显位移就
   // 提到每帧追踪（跟手），静止时退回低频（省算力给游戏）。
   var lastTrack = 0, hotUntil = 0;
+  // 上一次绘制用的变换与开关签名。叠加层静止时画面逐帧完全相同，
+  // 重绘纯属浪费 —— 实测 13 个分类(7118 点)每帧中位 9.2ms、P95 18.3ms，
+  // 已经吃掉一帧预算(16.7ms)的一半以上，并把 rAF 拖到 4.4fps，
+  // 与视频渲染抢同一个主线程（用户任务管理器里 WebView2 渲染进程 26.2%）。
+  var lastSig = '';
+  function drawSig() {
+    var f = st.fit;
+    if (!f) return '';
+    // 变换 + 开启的分类 + 画布尺寸，任一变化才需要重画。
+    var on = '';
+    for (var k in st.enabled) if (st.enabled[k]) on += k + ',';
+    return f.a.toFixed(3) + ',' + f.b.toFixed(3) + ',' + f.c.toFixed(3) + ',' +
+           f.d.toFixed(3) + ',' + f.tx.toFixed(1) + ',' + f.ty.toFixed(1) +
+           '|' + on + '|' + layer.width + 'x' + layer.height;
+  }
+
   function loop(ts) {
     if (!st.on) { st.raf = 0; return; }
     var moving = ts < hotUntil;
@@ -957,7 +981,9 @@
       // 位移超过 0.5px 视为"正在动"，接下来 500ms 全速追踪
       if (st.fit && Math.abs(st.fit.tx - before) > 0.5) hotUntil = ts + 500;
     }
-    draw();
+    // 只在真正变了的时候重绘。
+    var sig = drawSig();
+    if (sig !== lastSig) { lastSig = sig; draw(); }
     st.raf = requestAnimationFrame(loop);
   }
 
