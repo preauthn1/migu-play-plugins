@@ -1,7 +1,7 @@
 {
   "id": "genshin-map-overlay",
   "name": "原神地图叠加",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "author": "preauthn1",
   "description": "wiki 全地标点位叠加在游戏内大地图，ORB+光流连续跟随，F8 切换。",
   "homepage": "https://github.com/preauthn1/migu-play-plugins",
@@ -19,6 +19,11 @@
       "path": "vendor/opencv.js",
       "sha256": "63366510248adf3a7eddf3e793dd825404efb7df3749f4d6f8557c7fa4ca8aa0",
       "size": 10964323
+    },
+    {
+      "path": "vendor/fit_worker.js",
+      "sha256": "4a1c627ac0b2e9bb2d7aab513ed91b2e4e5c0f05ed602e5ce6c41eb1da08c989",
+      "size": 14520
     },
     {
       "path": "data/points.json",
