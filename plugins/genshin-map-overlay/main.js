@@ -117,7 +117,7 @@
   }
 
 
-  var PLUGIN_VER = '0.5.0';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.6.0';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -625,7 +625,12 @@
     function ensureCvInner() {
       return new Promise(function (res) {
         var m = window.cv;
-        if (m && m.ORB) { res(true); return; }
+        // 这条"已经就绪"的快路径以前直接 res(true) 就返回，**忘了设 CVPIN**。
+        // 后果很隐蔽：ensureReady 里取 CV 用的是 `CVPIN || window.cv`，所以底图
+        // 特征照样算得出来（真机日志 kp=12000 desc=12000 一切正常），可
+        // fullFit 的守卫是 `if (!CVPIN || ...)` —— 硬要求 CVPIN —— 于是永远
+        // 卡在"等待识别引擎"，看起来像 opencv 没加载，其实它好得很。
+        if (m && m.ORB) { if (!CVPIN) CVPIN = m; res(true); return; }
         // 形态 A：Promise（实测 opencv.js 4.x 就是这种）
         if (m && typeof m.then === 'function') {
           m.then(function (mod) {
@@ -690,9 +695,17 @@
     hookFrameCounter(el);   // 首次定位时挂上帧计数，供跟踪循环跳过静止帧
     var f = grab(el, 960);
     if (f.err) { log('ERR', 'grab 失败: ' + f.err); setStatus('画面不可读: ' + f.err, 'bad'); return false; }
-    if (!CVPIN || !CVPIN.ORB || !st.refDesc) {
-      setStatus('等待识别引擎', 'warn'); return false;
+    // 守卫用与调用点**同一个**表达式取 CV。以前守卫查 CVPIN、下面却用
+    // `CVPIN || window.cv`，两者不一致时会永远卡在"等待识别引擎"——真机上
+    // 就是这么卡住的（底图特征明明已经算完 kp=12000）。
+    var CVCHK = CVPIN || window.cv;
+    if (!CVCHK || !CVCHK.ORB || !st.refDesc) {
+      setStatus('等待识别引擎', 'warn');
+      log('WARN', '等待识别引擎: cv=' + (!!CVCHK) +
+          ' ORB=' + !!(CVCHK && CVCHK.ORB) + ' refDesc=' + !!st.refDesc);
+      return false;
     }
+    if (!CVPIN) CVPIN = CVCHK;
     try {
       var CV = CVPIN || window.cv;
       var q = CV.matFromArray(f.h, f.w, CV.CV_8UC1, f.grey);
@@ -985,6 +998,20 @@
 
   function loop(ts) {
     if (!st.on) { st.raf = 0; return; }
+    // 还没定位成功时不该每帧忙转：trackStep/drawSig/hasFreshFrame 都要读画面
+    // 或算签名，而此时根本没有可画的东西。用户在骁龙 7s Gen4 上报"游戏开启后
+    // 设置页开始卡顿"，就是这个空转循环在跟 WebView 抢主线程。
+    // 同理，页面不可见（切到设置页/后台）时直接停，靠 visibilitychange 恢复。
+    if (document.hidden || !st.fit) {
+      // 用独立字段存 timeout id：st.raf 只能放 rAF id，混用会让
+      // cancelAnimationFrame 取消不掉，循环变成僵尸继续吃 CPU。
+      st.raf = 0;
+      st.idleTimer = setTimeout(function () {
+        st.idleTimer = 0;
+        if (st.on) st.raf = requestAnimationFrame(loop);
+      }, document.hidden ? 600 : 250);
+      return;
+    }
     var moving = ts < hotUntil;
     var interval = moving ? 0 : 60;
     if (st.tracking && ts - lastTrack >= interval && hasFreshFrame()) {
@@ -1146,10 +1173,11 @@
     syncFab();
     if (st.on) {
       ensureReady();
-      if (!st.raf) st.raf = requestAnimationFrame(loop);
+      if (!st.raf && !st.idleTimer) st.raf = requestAnimationFrame(loop);
     } else {
       st.tracking = false;
       if (st.raf) { cancelAnimationFrame(st.raf); st.raf = 0; }
+      if (st.idleTimer) { clearTimeout(st.idleTimer); st.idleTimer = 0; }
     }
   }
 
