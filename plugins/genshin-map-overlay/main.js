@@ -117,7 +117,7 @@
   }
 
 
-  var PLUGIN_VER = '0.6.0';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.7.0';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -941,6 +941,22 @@
     // 圆点会连成一片把地形完全糊住（实测 8 类 6409 点时非常明显）。
     var mag = Math.sqrt(Math.abs(F.a * F.d - F.b * F.c)) || 1;
     var rad = Math.max(1.6, Math.min(6, 2.6 * mag * 40));
+
+    // ---- 密度聚合 ------------------------------------------------------
+    // 单个分类就有 2660 个点（普通宝箱），在缩小的地图上必然糊成一片彩色噪点，
+    // 既看不出哪里有东西，也挡住地形。用户原话："一大堆彩色点无法有效分辨"。
+    //
+    // 做法：把屏幕切成网格，同格同类的点合并成一个"簇"，画一个略大的圆并标数字。
+    // 网格边长取 max(18, rad*4)，即点小的时候（地图缩小）聚合得更狠。
+    // 只有当簇内点数 >1 才聚合；单点照常画，不影响精确定位。
+    var CELL = Math.max(18, rad * 4);
+    // 放得足够大时不再聚合，直接看真实点。
+    // 判据必须用 rad 本身：之前写的是 `CELL > rad * 3.2`，而 CELL 又等于
+    // max(18, rad*4)，rad*4 恒大于 rad*3.2 —— 条件永真，聚合永远关不掉，
+    // 所谓"放大后显示真实点"根本不会发生。
+    // rad 在 6px 封顶（见上面的 min），所以取 5.4：接近上限即视为已放大。
+    var clustering = rad < 5.4;
+
     var shown = 0;
     g.globalAlpha = 0.82;
     for (var mt in st.cats) {
@@ -952,6 +968,7 @@
       // 批量成一条路径再 fill/stroke。逐点 beginPath+arc+fill+stroke 是每点
       // 4 次 canvas 调用，实测 7118 点每帧中位 9.2ms、P95 18.3ms，超过一帧
       // 预算的一半并把 rAF 拖到 4.4fps。同色点共用一条路径后调用数降到 2 次。
+      var cells = clustering ? {} : null;
       g.beginPath();
       var batched = 0;
       for (var i = 0; i < pts.length; i++) {
@@ -963,11 +980,65 @@
         var sx = F.a * wx + F.b * wy + F.tx - r.left;
         var sy = F.c * wx + F.d * wy + F.ty - r.top;
         if (sx < -12 || sy < -12 || sx > cw + 12 || sy > ch + 12) continue;
+        shown++;
+        if (cells) {
+          // 只累加，最后统一画。键用整数格坐标。
+          var k = ((sx / CELL) | 0) + ',' + ((sy / CELL) | 0);
+          var c = cells[k];
+          if (c) { c.n++; c.x += sx; c.y += sy; }
+          else { cells[k] = { n: 1, x: sx, y: sy }; }
+          continue;
+        }
         g.moveTo(sx + rad, sy);          // moveTo 断开子路径，避免连线
         g.arc(sx, sy, rad, 0, 6.2832);
-        shown++; batched++;
+        batched++;
       }
-      if (batched) { g.fill(); g.stroke(); }
+      if (cells) {
+        // 先把所有单点圆批量画掉（同色一条路径，保持原有的性能特性）
+        var multi = [];
+        for (var k2 in cells) {
+          var c2 = cells[k2];
+          if (c2.n === 1) {
+            g.moveTo(c2.x + rad, c2.y);
+            g.arc(c2.x, c2.y, rad, 0, 6.2832);
+            batched++;
+          } else {
+            multi.push(c2);
+          }
+        }
+        if (batched) { g.fill(); g.stroke(); }
+        // 再画簇：半径随点数缓增（sqrt），避免密集区一个巨圆盖住半张图
+        if (multi.length) {
+          g.beginPath();
+          for (var j = 0; j < multi.length; j++) {
+            var m = multi[j];
+            var cx = m.x / m.n, cy = m.y / m.n;
+            var cr = Math.min(rad + 5, rad * (1 + 0.42 * Math.sqrt(m.n)));
+            g.moveTo(cx + cr, cy);
+            g.arc(cx, cy, cr, 0, 6.2832);
+          }
+          g.fill(); g.stroke();
+          // 数字标签：只在簇够大时画，否则文字比圆还大
+          g.save();
+          g.globalAlpha = 1;
+          g.fillStyle = '#fff';
+          g.strokeStyle = 'rgba(0,0,0,.85)';
+          g.lineWidth = 2.5;
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.font = 'bold 10px system-ui,-apple-system,sans-serif';
+          for (var j2 = 0; j2 < multi.length; j2++) {
+            var m2 = multi[j2];
+            var cr2 = Math.min(rad + 5, rad * (1 + 0.42 * Math.sqrt(m2.n)));
+            if (cr2 < 7) continue;
+            var tx = m2.x / m2.n, ty = m2.y / m2.n;
+            var label = m2.n > 99 ? '99+' : String(m2.n);
+            g.strokeText(label, tx, ty);
+            g.fillText(label, tx, ty);
+          }
+          g.restore();
+        }
+      } else if (batched) { g.fill(); g.stroke(); }
     }
     st.shown = shown;
     g.globalAlpha = 1;
