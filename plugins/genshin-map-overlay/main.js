@@ -572,10 +572,7 @@
              cssK: r.width / tw, std: std };
   }
 
-  // ---- OpenCV 运行时就绪 ---------------------------------------------------
-  // 宿主在本脚本前注入已校验的 opencv.js。注入后 window.cv 是 **thenable**，
-  // 就绪后 ORB 等才可用——绝不能拿到就当模块用；同时兼容旧构建的
-  // onRuntimeInitialized 回调与直接可用两种形态。
+  // OpenCV 可能是 thenable、回调式或已就绪模块；三种都要兼容。
   var cvReady = null;         // Promise<boolean>
   var CVPIN = null;           // 第一次就绪的 cv 实例，之后一律用它
   function ensureCv() {
@@ -641,10 +638,7 @@
     }
   }
 
-  // ---- 变换工具 -----------------------------------------------------------
-  // opencv.js 只有 estimateAffine2D（6 自由度）；地图只会平移+等比缩放
-  // （实测旋转 0°），必须把结果投影回相似变换，否则噪声引入剪切、叠加层
-  // 拉歪。做法：2x2 线性部分取最接近的旋转×统一缩放（Procrustes 解析解）。
+  // 将自由仿射投影回平移+旋转+等比缩放，避免噪声引入剪切。
   function similarityFrom(a11, a12, a21, a22, b1, b2) {
     // 相似变换的线性部分形如 [[s·cosθ, -s·sinθ], [s·sinθ, s·cosθ]]
     var c = (a11 + a22) / 2;   // s·cosθ 的最小二乘估计
@@ -985,8 +979,21 @@
   function trackStep() {
     if (!st.on || !st.fit || !st.surface || !CVPIN) return;
     var CV = CVPIN;
+    // 旋转时站点可能替换 video/canvas；旧引用会变成 detached/0x0。旧版永久
+    // 缓存它并报 NO_SIZE。失效时丢掉光流状态，下一拍重新发现真实 surface。
+    if (!st.surface.isConnected) {
+      st.surface = null; st.fit = null; st.prevGrey = st.prevPts = null;
+      setTimeout(function () { fullFit(false); }, 0); return;
+    }
     var f = grab(st.surface, 384);
-    if (f.err) { setStatus('画面不可读: ' + f.err, 'bad'); st.tracking = false; return; }
+    if (f.err) {
+      setStatus('画面不可读: ' + f.err, 'bad'); st.tracking = false;
+      if (f.err === 'NO_SIZE') {
+        st.surface = null; st.fit = null; st.prevGrey = st.prevPts = null;
+        setTimeout(function () { fullFit(false); }, 0);
+      }
+      return;
+    }
     if (!st.prevGrey || st.prevW !== f.w || st.prevH !== f.h) {
       st.prevGrey = f.grey; st.prevW = f.w; st.prevH = f.h; st.prevPts = null;
       return;
