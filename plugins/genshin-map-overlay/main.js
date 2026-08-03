@@ -5,9 +5,7 @@
   if (window.__miguPlugin_genshin_map_overlay) return;
   window.__miguPlugin_genshin_map_overlay = true;
 
-  // ---- 诊断：把异常连同堆栈显示出来 ---------------------------------------
-  // 手机上看不到控制台，没有堆栈只能猜，所以插件自带日志页：
-  // 日志/异常/环境信息收进环形缓冲，可弹出并一键复制。
+  // ---- 诊断：手机看不到控制台，日志/异常/环境收进环形缓冲，可弹出复制 ------
   var LOGCAP = 400;
   var logs = [];
   var lastError = null;
@@ -32,8 +30,7 @@
   }
 
   function recordError(where, e) {
-    // emscripten 的 C++ 异常在 JS 侧是**裸指针数值**（实测 7030256），
-    // 既无 message 也无 stack，必须解码否则日志里只有一串数字。
+    // emscripten 的 C++ 异常在 JS 侧是裸指针数值，必须解码否则只剩一串数字
     var msg;
     if (typeof e === 'number') {
       msg = 'WASM 异常 #' + e;
@@ -76,8 +73,7 @@
       'UA: ' + navigator.userAgent,
       'URL: ' + location.href,
       '视口: ' + innerWidth + 'x' + innerHeight + ' dpr=' + devicePixelRatio,
-      'opencv: ' + (CV ? (CV.ORB ? '已就绪' : 'cv存在但ORB缺失') : '未加载') +
-        (CV && CV.getBuildInformation ? '' : ''),
+      'opencv: ' + (CV ? (CV.ORB ? '已就绪' : 'cv存在但ORB缺失') : '未加载'),
       '插件状态: on=' + st.on + ' ready=' + st.ready + ' tracking=' + st.tracking,
       '参照特征: ' + (fitWorkerState === 'ready' ? '在 worker'
                     : (mainStore ? 'kp=' + mainStore.n : '-')),
@@ -114,7 +110,7 @@
   }
 
 
-  var PLUGIN_VER = '0.9.0';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.9.2';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -147,9 +143,7 @@
     moveAccum: 0              // 上次定位成功以来的累计屏幕位移(px)
   };
 
-  // ---- DOM：叠加画布 + 点位列表面板 ---------------------------------------
-  // 关键：画布 pointer-events:none，面板只在自身区域接收事件，
-  // 其余全部落到游戏，保证游戏照常操作。
+  // ---- DOM：叠加画布(pointer-events:none) + 点位列表面板，事件不漏给游戏 ---
   var layer = document.createElement('canvas');
   layer.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483000;' +
     'pointer-events:none;display:none';
@@ -212,9 +206,7 @@
     return b;
   }
 
-  // ---- 移动端入口：可拖动悬浮球 --------------------------------------------
-  // 手机没有 F8；游戏画面要接收滑动/点击，不能用"长按画面"之类手势
-  // 抢输入，悬浮球是唯一可靠触摸入口。
+  // ---- 移动端入口：可拖动悬浮球（手机没有 F8，长按类手势会抢游戏输入）------
   var fab = document.createElement('div');
   fab.textContent = '图';
   fab.title = '原神地图叠加（桌面端快捷键 F8）';
@@ -227,15 +219,13 @@
     'pointer-events:auto;user-select:none;-webkit-user-select:none;' +
     'touch-action:none;cursor:pointer';
 
-  // 悬浮球事件不能冒泡到游戏。必须挂**冒泡阶段**（第三参数 false）：
-  // 捕获阶段会把下面的 pointerdown/up 开关逻辑一起掐死（"点了没反应"）。
+  // 悬浮球事件不能漏给游戏；必须挂冒泡阶段——捕获阶段会掐死自家开关逻辑
   ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup',
    'click', 'touchstart', 'touchmove', 'touchend'].forEach(function (t) {
     fab.addEventListener(t, function (e) { e.stopPropagation(); }, false);
   });
 
-  // 拖动与点击要区分开：移动超过阈值算拖动，不触发开关。长按（600ms）打开
-  // 诊断日志——初始化就失败时面板不会显示，只有悬浮球这条路能看到日志。
+  // 移动超阈值算拖动不触发开关；长按 600ms 打开诊断日志（初始化失败时唯一入口）
   (function () {
     var dragging = false, moved = false, ox = 0, oy = 0, pid = null;
     var holdTimer = null, longPressed = false;
@@ -288,9 +278,7 @@
   }
   mount();
 
-  // ---- 日志页面 -----------------------------------------------------------
-  // 手机没有控制台，诊断信息必须页面内可见可复制。复制走三条退路：
-  // clipboard（需安全上下文）→ execCommand（老 WebView）→ 全选手动复制。
+  // ---- 日志页面：复制走三退路 clipboard → execCommand → 全选手动 -----------
   function buildLogPane() {
     if (logPane) return;
     logPane = document.createElement('div');
@@ -344,9 +332,7 @@
       var text = fullLogText();
       var done = function (ok) {
         bCopy.textContent = ok ? '已复制' : '已全选';
-        // 实测：WebView 里 Clipboard API 常因非安全上下文被拒，会走到全选
-        // 退路。此时必须明确告诉用户"下一步做什么"，否则看到一片蓝底
-        // 不知道已经可以长按复制了。
+        // WebView 里 Clipboard API 常被拒走全选退路，必须告诉用户下一步做什么
         hint.textContent = ok
             ? '已复制到剪贴板，直接粘贴发给开发者即可。'
             : '已为你全选文本 —— 现在长按选中区域，选「复制」即可。';
@@ -507,9 +493,8 @@
   }
 
   // ---- 画面获取 -----------------------------------------------------------
-  // 帧新鲜度：串流画面常长时间静止，反复 drawImage 浪费 13.9ms/次。用 rVFC 的
-  // presentedFrames（浏览器权威计数）判断有无新帧；不要用"方差有没有变"判断
-  // ——静止时方差本来就不变，会误判成取到旧帧。
+  // 帧新鲜度：静止画面反复 drawImage 浪费 13.9ms/次。用 rVFC 的
+  // presentedFrames（权威计数）判断新帧；"方差变没变"会误判静止帧。
   var frameTick = { last: -1, now: 0, hooked: false };
   function hookFrameCounter(el) {
     if (frameTick.hooked || !el || !el.requestVideoFrameCallback) return;
@@ -542,7 +527,37 @@
     return area > 10000 ? best : null;
   }
 
-  // 抓一帧灰度（缩到 targetW 宽）。返回 {grey,w,h,cssScale} 或 {err}
+  // 视频帧按 object-fit 规则摆进元素盒：**内容矩形 ≠ getBoundingClientRect**。
+  // 2026-08-03 真机截图定量证实：16:9 流放进 1366x612 元素盒，contain 令内容
+  // 1088x612 居中、左右各 139px 黑边；旧代码拿元素盒当内容矩形，点位整体偏
+  // 0.796 倍 + (139,0)px —— "红箭头"系统性偏移的全部来源（内点率查不出它：
+  // ORB 只证明 帧↔底图 自洽，证明不了 帧→屏幕 的几何）。
+  function contentBox(el) {
+    var r = el.getBoundingClientRect();
+    var vw = el.videoWidth || el.width || 0, vh = el.videoHeight || el.height || 0;
+    var b = { x: r.left, y: r.top, w: r.width, h: r.height };
+    if (!vw || !vh || !r.width || !r.height) return b;
+    var cs;
+    try { cs = getComputedStyle(el); } catch (_) { return b; }
+    var fit = cs.objectFit || 'fill';
+    if (fit === 'fill') return b;   // 双轴拉伸占满：内容=元素盒（kx≠ky 已支持）
+    var s = (fit === 'cover') ? Math.max(r.width / vw, r.height / vh)
+          : (fit === 'none') ? 1
+          : Math.min(r.width / vw, r.height / vh);   // contain / scale-down
+    if (fit === 'scale-down') s = Math.min(1, s);
+    b.w = vw * s; b.h = vh * s;
+    var pos = String(cs.objectPosition || '50% 50%').split(/\s+/);
+    b.x = r.left + posOff(pos[0], r.width - b.w);
+    b.y = r.top + posOff(pos[1], r.height - b.h);
+    return b;
+  }
+  function posOff(p, avail) {   // 计算样式的 object-position 分量：% 或 px
+    var v = parseFloat(p);
+    if (!isFinite(v)) return avail / 2;
+    return (String(p).indexOf('%') >= 0) ? avail * v / 100 : v;
+  }
+
+  // 抓一帧灰度（缩到 targetW 宽）。返回 {grey,w,h,css几何} 或 {err}
   function grab(el, targetW) {
     var vw = el.videoWidth || el.width || el.clientWidth;
     var vh = el.videoHeight || el.height || el.clientHeight;
@@ -566,10 +581,11 @@
     }
     var mean = sum / n, std = Math.sqrt(Math.max(0, sq / n - mean * mean));
     if (std < 3) return { err: 'BLANK' };
-    // 画面 CSS 尺寸 / 抓帧尺寸：把识别结果换算到屏幕像素
-    var r = el.getBoundingClientRect();
-    return { grey: grey, w: tw, h: th, cssX: r.left, cssY: r.top,
-             cssK: r.width / tw, std: std };
+    // 内容矩形 / 抓帧尺寸：把识别结果换算到屏幕像素。x/y 比例分开存，
+    // object-fit:fill 且宽高比不一致时两轴不相等。
+    var b = contentBox(el);
+    return { grey: grey, w: tw, h: th, cssX: b.x, cssY: b.y,
+             cssK: b.w / tw, cssKy: b.h / th, std: std };
   }
 
   // OpenCV 可能是 thenable、回调式或已就绪模块；三种都要兼容。
@@ -601,8 +617,7 @@
     function ensureCvInner() {
       return new Promise(function (res) {
         var m = window.cv;
-        // 快路径也必须设 CVPIN：曾漏设导致硬要求 CVPIN 的守卫永远卡在
-        // "等待识别引擎"，而底图特征其实算得好好的（真机 kp=12000）。
+        // 快路径也必须设 CVPIN：曾漏设导致守卫永远卡在"等待识别引擎"
         if (m && m.ORB) { if (!CVPIN) CVPIN = m; res(true); return; }
         // 形态 A：Promise（实测 opencv.js 4.x 就是这种）
         if (m && typeof m.then === 'function') {
@@ -672,22 +687,15 @@
   }
 
   // ---- 定位：ORB 匹配（低频，在 worker）+ 光流跟随（快，每帧）--------------
-  //
-  // 两层修复（实测依据与匹配管线**正本**都在 vendor/fit_worker.js，一份实现
-  // 两个上下文共用，判据不会分叉）：
-  //   1) 尺度对齐：画面**缩到底图尺度**再匹配。旧代码反向放大到 960 宽，
-  //      尺度差 ~9 倍 → knnMatch 8000×12000 单次 8.7~10.6s、内点率 0.39，
-  //      且失败每 60ms 重试把主线程焊死（用户的"拖动卡死/FPS 归 0"）。
-  //      重定位用上次 fit 的尺度当先验 + ROI 局部搜索；首次金字塔扫档。
-  //   2) 执行位置：匹配跑在 worker，主线程只剩 grab ~20ms；失败指数退避
-  //      1s→15s；拖动中/静止无位移不触发；worker 起不来时用同一份核心在
-  //      主线程同步回退，仍受退避保护。
+  // 匹配管线**正本**在 vendor/fit_worker.js（一份实现两个上下文共用，判据
+  // 不分叉）：画面缩到底图尺度、投影引导局部匹配；失败指数退避 1s→15s；
+  // 拖动中/静止无位移不触发；worker 起不来时同一份核心在主线程同步回退。
   var fitWorker = null, fitWorkerState = 'none';  // none|starting|ready|failed
   var mainCore = null, mainStore = null, mainCtx = null;  // 同步回退用的核心
   var fitReqSeq = 0, fitReqMeta = null;   // 在途请求：{id, t0, fitAtReq}
   var refGrey = null;      // 底图灰度常驻(6MB)：worker 中途死掉时回退建库用
-  // 在途超 60s 才算 worker 卡死：跟丢时的全图金字塔慢设备实测可达 ~20s
-  var FIT_TIMEOUT = 60000;
+  // 在途超 30s 才算 worker 卡死（金字塔已硬上限 ~2s，慢设备留足余量）
+  var FIT_TIMEOUT = 30000;
 
   // 资产在宿主侧以 data URL 注入 __miguPluginAssets；独立测试也可能给源码文本
   function assetText(path) {
@@ -769,13 +777,11 @@
     fitWorkerState = 'failed';
     if (fitWorker) { try { fitWorker.terminate(); } catch (_) {} fitWorker = null; }
     fitReqMeta = null;
-    // 主线程特征库不在这里补建：fullFitSync 首次被调时才建（refGrey 常驻），
-    // 避免在事件回调里凭空插入一次数秒的 longtask
+    // 主线程特征库懒建（fullFitSync 首次调用时），不在事件回调里插 longtask
   }
 
-  // worker 起不来时，把同一份匹配核心装载到页面直接调用。new Function 对
-  // 声明了 wasm 权限的插件是允许的（opencv.js 胶水自身就依赖它），比在
-  // main.js 里复制整条管线安全：只有一份判据。
+  // worker 起不来时把同一份匹配核心装载到页面直接调用（wasm 权限允许
+  // new Function，opencv.js 胶水自身就依赖它）；只有一份判据。
   function ensureMainCore() {
     if (mainCore) return true;
     var wsrc = assetText('vendor/fit_worker.js');
@@ -788,8 +794,7 @@
     return !!mainCore;
   }
 
-  // 失败指数退避。旧代码跟丢时每 60ms 重试一次 10s 级的全量 ORB —— FPS 归 0
-  // 的直接原因；现在最坏 15s 一次，主线程立即恢复响应。
+  // 失败指数退避（最坏 15s 一次）：旧代码 60ms 重试全量 ORB 曾把 FPS 打到 0
   function noteFitFail() {
     st.fitFails++;
     st.fitBackoff = Math.min(15000, 1000 * Math.pow(2, Math.min(4, st.fitFails - 1)));
@@ -800,7 +805,7 @@
     st.lastFullFit = Date.now();
     // 本次已对齐真实画面：漂移/位移/缩放累积与失败退避全部归零
     st.drift = 0; st.moveAccum = 0; st.zoomAccum = 1;
-    st.fitFails = 0; st.fitBackoff = 0;
+    st.fitFails = 0; st.fitBackoff = 0; st.flowBroke = 0;
     // 不要在这里写 st.prevGrey！fullFit 的抓帧宽度随尺度先验变化、trackStep
     // 恒用 384 宽，塞进跟踪基准会让尺寸检查失配并丢弃下一帧（实测表现为
     // 叠加层稳定滞后真实缩放一步）。只清跟踪点让它自建基准。
@@ -851,35 +856,29 @@
     applyFitResult(res, meta, Date.now() - meta.t0);
   }
 
-  // ---- 尺度对齐（2026-08-02 实测，probe/match_at_ref_scale.py）------------
-  // 游戏画的是底图局部的**放大**（1366 宽屏幕只对应底图 ~379px），匹配前要把
-  // 画面缩回底图尺度。st.fit 的 mag = 屏幕 CSS px / 底图 px，所以目标抓帧宽
-  // = CSS 宽 / mag；轻微过采样 ×1.1 内点率最高（420 宽 0.78 vs 380 宽 0.62）。
-  // 上限 640 而不是 960：帧比底图**粗**是安全方向（底图特征建了 8 层金字塔，
-  // 实测帧 0.4~0.8× 底图尺度内点率仍 0.8+），帧比底图细才致命；
-  // 压上限省掉低倍缩放时的大半检测像素。
-  // 无先验（首次定位）或连败 3 次（先验尺度已不可信）返回 0，走金字塔。
+  // ---- 尺度对齐（2026-08-02，probe/match_at_ref_scale.py）-----------------
+  // 抓帧宽 = 内容 CSS 宽 / mag ×1.1 过采样，把画面缩回底图尺度再匹配。
+  // 上限 640：帧比底图粗是安全方向（底图 8 层金字塔兜着），帧比底图细才致命。
+  // 无先验（首次）或连败 3 次（先验尺度已不可信）返回 0，走金字塔。
   function fitTargetW(el) {
     var F = st.fit;
     if (!F || st.fitFails >= 3) return 0;
     var mag = Math.sqrt(Math.abs(F.a * F.d - F.b * F.c));
     if (!isFinite(mag) || mag < 0.05) return 0;
-    var r = el.getBoundingClientRect();
-    return Math.max(220, Math.min(640, Math.round(1.1 * r.width / mag)));
+    // 用**内容**宽而不是元素宽：黑边不该计入采样预算（旧代码因此多采 26%）
+    return Math.max(220, Math.min(640, Math.round(1.1 * contentBox(el).w / mag)));
   }
 
-  // ROI 先验：屏幕中心反投影到底图 + 搜索半径 = 视野在底图上的宽度（框=2 倍
-  // 视野宽；框更大则截断后留在视野内的特征变少，实测内点 35 vs 30）。
-  // 不按帧宽算：帧被 640 上限压过时会盖不住视野。
+  // 帧→底图 先验 = fit⁻¹ ∘ K（K: 帧→内容矩形）。worker 用它把每个帧特征
+  // 投影到底图网格附近做局部匹配（代替旧的 ROI 方框 + knnMatch）。
   function priorOf(f) {
     var F = st.fit, inv = F && affInv(F);
     if (!inv) return null;
-    var mag = Math.sqrt(Math.abs(F.a * F.d - F.b * F.c)) || 1;
-    var sx = f.cssX + f.w * f.cssK / 2, sy = f.cssY + f.h * f.cssK / 2;
-    return { cx: inv.a * sx + inv.b * sy + inv.tx,
-             cy: inv.c * sx + inv.d * sy + inv.ty,
-             pad: Math.min(1200, Math.max(320,
-                  Math.round(f.w * f.cssK / mag))) };
+    var ky = f.cssKy || f.cssK;
+    return { a: inv.a * f.cssK, b: inv.b * ky,
+             c: inv.c * f.cssK, d: inv.d * ky,
+             tx: inv.a * f.cssX + inv.b * f.cssY + inv.tx,
+             ty: inv.c * f.cssX + inv.d * f.cssY + inv.ty };
   }
 
   // 统一入口：worker 可用走异步（主线程只付 grab ~20ms），否则同步回退。
@@ -898,12 +897,16 @@
 
   function fitViaWorker(el) {
     if (fitReqMeta) {
-      // 已有在途请求就不重复排队；超时视为 worker 卡死，降级下次走同步
-      if (Date.now() - fitReqMeta.t0 > FIT_TIMEOUT) {
+      var age = Date.now() - fitReqMeta.t0;
+      if (age > FIT_TIMEOUT) {
         workerFailed('fit 超过 ' + FIT_TIMEOUT + 'ms 未返回');
         noteFitFail();
+        return true;
       }
-      return true;
+      // 1.2s 内的在途请求继续等（去重）；更旧的直接被新请求**顶替**：
+      // worker 只跑最新一条（金字塔逐档让出事件循环，档间即弃旧），
+      // 旧应答回来时因 id 不符被丢弃 —— 请求永远排不成队。
+      if (age < 1200) return true;
     }
     var tw = fitTargetW(el);
     var f = grab(el, tw || 960);
@@ -914,25 +917,35 @@
                            tx: st.fit.tx, ty: st.fit.ty } : null
     };
     // grab 每次都建新 ImageData，buffer 可安全转移（零拷贝）；
-    // 画面几何(k/ox/oy)随请求带过去，worker 直接算出 world->屏幕 的 fit
-    var msg = { type: 'fit', id: fitReqMeta.id,
-      grey: f.grey.buffer, w: f.w, h: f.h,
-      k: f.cssK, ox: f.cssX, oy: f.cssY, mode: tw ? 'prior' : 'pyr' };
-    if (tw) {
-      var pr = priorOf(f);
-      if (pr) { msg.cx = pr.cx; msg.cy = pr.cy; msg.pad = pr.pad; }
-      else msg.mode = 'pyr';
-    }
+    // 画面几何(kx/ky/ox/oy)随请求带过去，worker 直接算出 world->屏幕 的 fit
+    var msg = fitMsg(f, tw);
+    msg.type = 'fit'; msg.id = fitReqMeta.id; msg.grey = f.grey.buffer;
     fitWorker.postMessage(msg, [f.grey.buffer]);
     if (!st.fit) setStatus('定位中…', 'warn');
     return true;
   }
 
+  // worker 与同步两条路共用的请求参数。帧特征档位：定位链健康时用 900/2 层
+  // （实测 92ms、内点 46 足够），一失败就升 1500/4 层换鲁棒性（先验尺度
+  // 可能已不可信，多两层金字塔覆盖 ±44% 尺度差）。
+  function fitMsg(f, tw) {
+    var m = { w: f.w, h: f.h, kx: f.cssK, ky: f.cssKy || f.cssK,
+              ox: f.cssX, oy: f.cssY, mode: tw ? 'prior' : 'pyr' };
+    if (tw) {
+      if (st.fitFails > 0) { m.nf = 1500; m.lv = 4; }
+      else { m.nf = 900; m.lv = 2; }
+      var pr = priorOf(f);
+      if (pr) { m.pri = pr; m.rad = 90; }
+      else m.mode = 'pyr';
+    }
+    // pyr 模式不指定档位：worker 默认 1200/3，逐档缩放已覆盖尺度空间
+    return m;
+  }
+
   // 同步路径（worker 不可用时的回退）：装载同一份核心直接调用。
   // 特征库懒建：第一次走到这里才建（一次数秒的 longtask，只有回退模式才付）。
   function fullFitSync(el) {
-    // 守卫必须与调用点用同一个表达式取 CV：曾因守卫查 CVPIN、调用用
-    // `CVPIN || window.cv` 的不一致，真机永远卡在"等待识别引擎"。
+    // 守卫与调用点必须用同一表达式取 CV：曾因不一致永远卡"等待识别引擎"
     var CVCHK = CVPIN || window.cv;
     if (!CVCHK || !CVCHK.ORB || !ensureMainCore()) {
       setStatus('等待识别引擎', 'warn');
@@ -952,13 +965,8 @@
       var tw = fitTargetW(el);
       var f = grab(el, tw || 960);
       if (f.err) { log('ERR', 'grab 失败: ' + f.err); setStatus('画面不可读: ' + f.err, 'bad'); return false; }
-      var m = { grey: f.grey, w: f.w, h: f.h,
-                k: f.cssK, ox: f.cssX, oy: f.cssY, mode: tw ? 'prior' : 'pyr' };
-      if (tw) {
-        var pr = priorOf(f);
-        if (pr) { m.cx = pr.cx; m.cy = pr.cy; m.pad = pr.pad; }
-        else m.mode = 'pyr';
-      }
+      var m = fitMsg(f, tw);
+      m.grey = f.grey;
       var t0 = Date.now();
       var res = mainCore.runFit(CVPIN, mainStore, mainCtx, m) ||
                 { ok: false, why: 'nofeat' };
@@ -970,6 +978,19 @@
       setStatus('定位异常: ' + d1.message, 'bad');
       return false;
     }
+  }
+
+  // 光流丢锚急救：断锚期间积累的偏移只有 ORB 能修，拖动中也要修，但仍受
+  // 重试间隔约束（请求可被顶替，不会排队）。退避封顶 5s：非地图画面连败会
+  // 把退避推到 15s，切回大地图后要干等——封顶后最迟 5s 重挂锚。
+  function flowRescue() {
+    st.flowBroke = 1;
+    var gap = Math.max(800, Math.min(st.fitBackoff, 5000));
+    if (Date.now() - st.lastFitAttempt >= gap) {
+      fullFit(false);
+      return true;
+    }
+    return false;
   }
 
   // 每帧：用光流估计"上一帧 -> 当前帧"的相似变换并并进 st.fit——拖动/缩放时
@@ -1022,6 +1043,7 @@
       if (p0.rows < 12) {
         prev.delete(); cur.delete();
         st.prevGrey = f.grey; st.prevPts = p0;
+        flowRescue();
         return;
       }
       var p1 = new CV.Mat(), stt = new CV.Mat(), err = new CV.Mat();
@@ -1056,12 +1078,13 @@
             //   世界点没动，所以"world -> 当前屏幕"= S ∘ "world -> 上一屏幕"，
             //   其中 S 就是 M 提升到屏幕尺度的版本（**不取逆**：M 已经是
             //   prev->cur 的正向映射，正是我们要追加的增量）。
-            //   S = K ∘ M ∘ K⁻¹，K 为纯缩放 k + 平移 off，于是相似变换
-            //   M=(L,t) 提升为 S=(L, k·t + (I-L)·off)。
-            var L11 = sim.a, L12 = sim.b, L21 = sim.c, L22 = sim.d;
-            var k = f.cssK, ox = f.cssX, oy = f.cssY;
-            var stx = k * sim.tx + (ox - (L11 * ox + L12 * oy));
-            var sty = k * sim.ty + (oy - (L21 * ox + L22 * oy));
+            //   S = K ∘ M ∘ K⁻¹，K 为帧→内容矩形（kx/ky 可不等，见 grab），
+            //   于是线性部 [[L11, L12·q],[L21/q, L22]]（q=kx/ky），平移随之。
+            var kx = f.cssK, ky = f.cssKy || f.cssK, qr = kx / ky;
+            var L11 = sim.a, L12 = sim.b * qr, L21 = sim.c / qr, L22 = sim.d;
+            var ox = f.cssX, oy = f.cssY;
+            var stx = kx * sim.tx + (ox - (L11 * ox + L12 * oy));
+            var sty = ky * sim.ty + (oy - (L21 * ox + L22 * oy));
             // F_new = S ∘ F_old
             var F = st.fit;
             st.fit = {
@@ -1100,11 +1123,14 @@
       var movedEnough = st.moveAccum > 2 || zoomed;
       var needFit = movedEnough &&
           (st.drift > 40 || zoomed || now - st.lastFullFit > 4000);
-      // 再过两道闸：1) 正在拖动（hotUntil 未过期）不跑，等手势停下补上；
-      // 2) 失败退避 fitBackoff，跟丢时不再每 60ms 重试。
-      //    （worker 在途请求由 fitViaWorker 内部去重。）
+      // 两道闸：1) 拖动中（hotUntil）不跑，手势停下补；2) 失败退避。
+      // 例外：光流断锚过（flowBroke）说明 fit 可能带着大偏移在裸奔，绕过
+      // hotUntil 立刻救 —— 靶场实测断锚后偏移 600px 挂满整段拖动。
       var didFit = false;
-      if (needFit && performance.now() >= hotUntil &&
+      if (okCount < 12) st.flowBroke = 1;
+      if (st.flowBroke) {
+        didFit = flowRescue();
+      } else if (needFit && performance.now() >= hotUntil &&
           now - st.lastFitAttempt >= st.fitBackoff) {
         fullFit(false);
         didFit = true;
@@ -1294,16 +1320,14 @@
   }
 
   function buildRef() {
-    // 单张预拼底图，随插件发布并经 sha256 校验。
-    // 不再逐块拉 wiki OSS —— 那些请求在真机上被 CORS 全数拒绝。
+    // 单张预拼底图（sha256 校验）；wiki OSS 无 CORS 头，逐块拉必死。
     return new Promise(function (resolve, reject) {
       var c = document.createElement('canvas');
       c.width = REF_W; c.height = REF_H;
       var g = c.getContext('2d', { willReadFrequently: true });
       g.fillStyle = '#1b2234'; g.fillRect(0, 0, REF_W, REF_H);
       var im = new Image();
-      // 宿主域(raw.githubusercontent)实测返回 access-control-allow-origin: *，
-      // 所以 anonymous 能拿到可读像素；缺了它画布会被污染。
+      // raw.githubusercontent 返回 ACAO:*，anonymous 才有可读像素
       im.crossOrigin = 'anonymous';
       im.onload = function () {
         try {
@@ -1317,8 +1341,7 @@
         reject(new Error('底图加载失败（' + REPO + 'data/ref_map.jpg）'));
       };
       setStatus('载入底图…');
-      // 优先用宿主注入的已校验资源（data: URL，同源不会污染画布，
-      // 也不依赖任何第三方主机的 CORS 头）；独立测试时回退到 REPO。
+      // 优先宿主注入的已校验资源（data: URL 不污染画布）；独立测试回退 REPO
       var A = window.__miguPluginAssets || {};
       im.src = A['data/ref_map.jpg'] || (REPO + 'data/ref_map.jpg');
     });
@@ -1330,8 +1353,7 @@
     st.loading = true;
     log('INFO', 'ensureReady v' + PLUGIN_VER + ': 开始加载（等 opencv → 点位 → 底图特征）');
     setStatus('等待识别引擎…');
-    // 先等 opencv 运行时（window.cv 初始为 Promise，必须解析），
-    // 再拼底图算特征 —— 顺序颠倒会拿到 cv.ORB undefined。
+    // 先等 opencv 运行时再拼底图算特征——顺序颠倒会拿到 cv.ORB undefined
     ensureCv().then(function (ok) {
       if (!ok) throw new Error('opencv 运行时不可用（宿主未注入或校验失败）');
       setStatus('加载点位…');
@@ -1348,8 +1370,7 @@
     }).then(function (ref) {
       var CV = CVPIN || window.cv;
       if (!CV || !CV.ORB) throw new Error('识别引擎未就绪');
-      // 内存高峰：一次 getImageData 要 100MB RGBA。手机 WebView 堆远小于
-      // 桌面（真机在这里拿到过 WASM 陷阱）——分块读取，每步记日志。
+      // 一次 getImageData 100MB RGBA 会打爆手机 WebView：分块读，每步记日志
       setStatus('提取特征…');
       log('INFO', 'ref 尺寸 ' + REF_W + 'x' + REF_H +
           '（' + (REF_W * REF_H / 1e6).toFixed(1) + 'M px，RGBA 约 ' +
@@ -1361,9 +1382,7 @@
         throw new Error('内存不足：无法分配 ' + (n / 1048576).toFixed(0) +
                         'MB 灰度缓冲（' + (e && e.message || e) + '）');
       }
-      // 按行带分块 getImageData：一次性取 100MB 在移动端极易失败，
-      // 分块后峰值只有 REF_W * band * 4。
-      var band = 256, done = 0;
+      var band = 256, done = 0;   // 分块后峰值只有 REF_W * band * 4
       for (var y0 = 0; y0 < REF_H; y0 += band) {
         var hh = Math.min(band, REF_H - y0);
         var d;
@@ -1410,8 +1429,7 @@
     }
   }
 
-  // 桌面端快捷键（F8 切换 / F9 重定位）。这是**额外**入口，不是唯一入口 ——
-  // 手机上没有这两个键，触摸端靠上面那个悬浮球开关。
+  // 桌面端快捷键（F8 切换 / F9 重定位）；触摸端用上面的悬浮球。
   window.addEventListener('keydown', function (e) {
     if (e.key === 'F8') { e.preventDefault(); toggle(); }
     else if (e.key === 'F9' && st.on) { e.preventDefault(); fullFit(true); }
