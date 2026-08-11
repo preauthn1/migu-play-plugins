@@ -195,6 +195,38 @@ def main():
                                  hosts=['https://tiles.example.com/a/']),
                             js_tile, expect_msg='invalid host'))
 
+    # --- 图标清单：URL 主机必须已登记，否则 hosts 白名单可被绕过 ---------
+    ICONS_OK = json.dumps({"201": {"n": "\u4e03\u5929\u795e\u50cf", "g": "\u5730\u6807",
+        "icon": "https://tiles.example.com/i/a.png"}}, ensure_ascii=False).encode()
+    ICONS_BADHOST = json.dumps({"201": {"n": "x", "g": "y",
+        "icon": "https://evil.example.net/i/a.png"}}, ensure_ascii=False).encode()
+    ICONS_HTTP = json.dumps({"201": {"n": "x", "g": "y",
+        "icon": "http://tiles.example.com/i/a.png"}}, ensure_ascii=False).encode()
+
+    results.append(run_case('icon manifest with declared host passes',
+                            dict(BASE_META, permissions=['remote-tiles'],
+                                 hosts=['tiles.example.com']),
+                            js_tile, files={'data/icons.json': ICONS_OK},
+                            expect_ok=True))
+
+    results.append(run_case('icon manifest with undeclared host rejected',
+                            dict(BASE_META, permissions=['remote-tiles'],
+                                 hosts=['tiles.example.com']),
+                            js_tile, files={'data/icons.json': ICONS_BADHOST},
+                            expect_msg='is not in the hosts allowlist'))
+
+    results.append(run_case('icon manifest over http rejected',
+                            dict(BASE_META, permissions=['remote-tiles'],
+                                 hosts=['tiles.example.com']),
+                            js_tile, files={'data/icons.json': ICONS_HTTP},
+                            expect_msg='must use https'))
+
+    results.append(run_case('malformed icon manifest rejected',
+                            dict(BASE_META, permissions=['remote-tiles'],
+                                 hosts=['tiles.example.com']),
+                            js_tile, files={'data/icons.json': b'{not json'},
+                            expect_msg='not valid JSON'))
+
     ok = sum(results)
     print(f'\n{ok}/{len(results)} cases passed')
     return 0 if ok == len(results) else 1

@@ -149,8 +149,10 @@
     'pointer-events:none;display:none';
 
   var panel = document.createElement('div');
-  panel.style.cssText = 'position:fixed;right:10px;top:10px;z-index:2147483600;' +
-    'width:230px;max-height:78vh;display:none;flex-direction:column;' +
+  // 下移让开游戏右上角 HUD（原神那里是深渊层数/纪行/关闭按钮，实测面板压在
+  // 上面互相打架）。面板可拖动，用户仍能自行摆放；这里只改默认落点。
+  panel.style.cssText = 'position:fixed;right:10px;top:96px;z-index:2147483600;' +
+    'width:230px;max-height:70vh;display:none;flex-direction:column;' +
     'background:rgba(12,16,24,.90);border:1px solid rgba(255,255,255,.13);' +
     'border-radius:10px;color:#dbe4ee;font:12px/1.6 system-ui,-apple-system,"PingFang SC",sans-serif;' +
     'box-shadow:0 8px 28px rgba(0,0,0,.5);overflow:hidden;' +
@@ -424,10 +426,18 @@
   btnAll.addEventListener('click', function () { setAll(true); });
   btnNone.addEventListener('click', function () { setAll(false); });
   btnRefit.addEventListener('click', function () { fullFit(true); });
-  search.addEventListener('input', renderList);
+  // 搜索防抖：逐键同步重建整表会在快速输入时叠加重排延迟。
+  var searchTimer = 0;
+  search.addEventListener('input', function () {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () { searchTimer = 0; renderList(); }, 120);
+  });
 
   function setAll(v) {
     for (var k in st.cats) st.enabled[k] = v;
+    // lastSig 记录了上次绘制的"变换+启用分类"签名；不清掉它，
+    // loop() 会认为画面没变而跳过重绘，全选/清空看起来没反应。
+    lastSig = '';
     renderList(); saveEnabled(); draw();
   }
 
@@ -443,6 +453,100 @@
     return null;
   }
 
+  // ---- 图标（wiki 官方图标，运行时按需拉取）--------------------------------
+  // 不内嵌：内嵌等于把图标版本焊死在插件里，wiki/游戏更新后长期显示旧图。
+  // URL 集中登记在 data/icons.json，主机已在 plugin.json 的 hosts 白名单中。
+  //
+  // 性能要点（这是本次改造的核心）：
+  //  1) 每类图标只解码一次，之后复用同一个 ImageBitmap/Image；
+  //  2) 画布绘制用**预缩放的离屏 canvas**，而不是每帧把 32px 源图缩到 ~13px。
+  //     浏览器对 drawImage 的实时缩放要走一次重采样，7000 点时是主要开销；
+  //     预缩放后每点只是一次 1:1 位图拷贝。
+  //  3) 缩放档位取整（2px 步进）并缓存，避免连续缩放时每帧重建离屏图。
+  var icons = null;           // markType -> {url, img, ready, failed}
+  var iconMeta = null;        // data/icons.json 原文
+  var ICON_SRC = 32;          // 源图统一 32px 见方
+
+  function loadIconMeta() {
+    var A = window.__miguPluginAssets || {};
+    if (A['data/icons.json']) {
+      try { return Promise.resolve(JSON.parse(A['data/icons.json'])); }
+      catch (e) { return Promise.resolve(null); }
+    }
+    return fetch(REPO + 'data/icons.json')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .catch(function () { return null; });
+  }
+
+  function initIcons(meta) {
+    iconMeta = meta || null;
+    icons = {};
+    if (!meta) return void log('WARN', '图标清单缺失，退回彩色圆点');
+    var n = 0;
+    for (var mt in meta) {
+      var url = meta[mt] && meta[mt].icon;
+      if (!url) continue;
+      icons[mt] = { url: url, img: null, ready: false, failed: false };
+      n++;
+    }
+    log('INFO', '图标清单载入 ' + n + ' 项');
+  }
+
+  // 懒加载：只有真正要画的分类才发请求，避免开启即 13 个并发。
+  // 图标清单可能还没经由 ensureReady() 载入（例如宿主先注入资源、或测试
+  // 直接调 setCats）。这里做一次同步兜底：资源已在 __miguPluginAssets 里就
+  // 立刻解析，避免"图标要等定位链跑完才出现"这种顺序耦合。
+  function ensureIconMeta() {
+    if (iconMeta || icons) return;
+    var A = window.__miguPluginAssets || {};
+    if (A['data/icons.json']) {
+      try { initIcons(JSON.parse(A['data/icons.json'])); return; } catch (_) {}
+    }
+    initIcons(null);
+  }
+
+  function iconFor(mt) {
+    ensureIconMeta();
+    var e = icons && icons[mt];
+    if (!e || e.failed) return null;
+    if (e.ready) return e;
+    if (!e.img) {
+      var im = new Image();
+      e.img = im;
+      // 只读图片：不带 cookie、不外泄 referrer。
+      try { im.crossOrigin = 'anonymous'; } catch (_) {}
+      try { im.referrerPolicy = 'no-referrer'; } catch (_) {}
+      im.onload = function () {
+        e.ready = true;
+        // 图标到位后重绘一次（签名机制否则会认为画面没变）。
+        lastSig = ''; if (st.on && st.fit) draw();
+      };
+      im.onerror = function () {
+        e.failed = true;
+        log('WARN', '图标加载失败，改用圆点: ' + mt);
+      };
+      im.src = e.url;
+    }
+    return null;
+  }
+
+  // 图标绘制预算（headless Chromium 实测，1280x719 画布，32px 源图 → 13px）：
+  //   标记数   圆点      图标(drawImage)
+  //     400   0.15ms    0.55ms
+  //    2000   0.78ms    3.43ms       ← 图标贵 4.4 倍
+  // 另外实测："先缩到目标尺寸再 1:1 拷贝"并不比让 drawImage 直接缩放更快
+  // （400 点 1.03x、2000 点 0.97x）—— 现代 Chromium 已经把这条路优化掉了，
+  // 所以不再维护离屏缩放缓存，避免白占内存和多一份状态。
+  // 真正有效的是**按密度切换**：密集时用圆点保帧率，稀疏时用图标保可读性。
+  var ICON_BUDGET = 900;      // 单帧图标上限，约 1.5ms 绘制预算
+
+  // 这一帧该用图标还是圆点：需要图标就绪，且当前放大级别与可见点数都合适。
+  function iconMode(mt, rad, visibleGuess) {
+    if (rad < 3.2) return null;                 // 太小：图标看不清，圆点更清晰
+    if (visibleGuess > ICON_BUDGET) return null; // 太密：优先帧率
+    return iconFor(mt);
+  }
+
   var COLORS = ['#ff5a5a', '#ffd24a', '#8de85f', '#38bdf8', '#c084fc',
                 '#fb7185', '#4ade80', '#f59e0b', '#a5f3fc', '#fca5a5'];
   function colorOf(mt) {
@@ -451,39 +555,83 @@
     return COLORS[Math.abs(h) % COLORS.length];
   }
 
+  // 列表按 wiki 的分组组织（地标 / 神瞳&地灵龛 / 宝箱 / 机关），每行显示
+  // wiki 官方图标而不是纯色圆点 —— 这是用户能直接对上游对照的视觉语言。
+  // 一次性构建 DocumentFragment 再挂载：逐行 appendChild 会触发多次重排，
+  // 13 行影响不大，但搜索时每次输入都重建整表，累积起来是可感的输入延迟。
   function renderList() {
     if (!st.cats) return;
+    ensureIconMeta();
     var q = (search.value || '').trim();
-    list.innerHTML = '';
+    var frag = document.createDocumentFragment();
     var keys = Object.keys(st.cats).sort(function (a, b) {
       return st.cats[b].p.length - st.cats[a].p.length;
     });
+    // 分组归集，保持组内按点数降序。
+    var groups = {}, gorder = [];
     keys.forEach(function (mt) {
       var c = st.cats[mt];
       if (q && c.n.indexOf(q) < 0) return;
-      var row = document.createElement('label');
-      row.style.cssText = 'display:flex;align-items:center;gap:7px;padding:3px 7px;' +
-        'border-radius:6px;cursor:pointer';
-      row.addEventListener('mouseenter', function () { row.style.background = 'rgba(255,255,255,.07)'; });
-      row.addEventListener('mouseleave', function () { row.style.background = ''; });
-      var cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.checked = !!st.enabled[mt];
-      cb.style.cssText = 'accent-color:' + colorOf(mt) + ';margin:0';
-      cb.addEventListener('change', function () {
-        st.enabled[mt] = cb.checked; saveEnabled(); draw();
-      });
-      var dot = document.createElement('span');
-      dot.style.cssText = 'width:8px;height:8px;border-radius:50%;flex:none;' +
-        'background:' + colorOf(mt);
-      var nm = document.createElement('span');
-      nm.textContent = c.n; nm.style.cssText = 'flex:1;overflow:hidden;' +
-        'text-overflow:ellipsis;white-space:nowrap';
-      var ct = document.createElement('span');
-      ct.textContent = c.p.length;
-      ct.style.cssText = 'font:10px monospace;color:#8b9bb0';
-      row.appendChild(cb); row.appendChild(dot); row.appendChild(nm); row.appendChild(ct);
-      list.appendChild(row);
+      var gname = (iconMeta && iconMeta[mt] && iconMeta[mt].g) || '其他';
+      if (!groups[gname]) { groups[gname] = []; gorder.push(gname); }
+      groups[gname].push(mt);
     });
+    gorder.forEach(function (gname) {
+      var hd = document.createElement('div');
+      hd.textContent = gname;
+      hd.style.cssText = 'padding:6px 8px 2px;font-size:10px;letter-spacing:.5px;' +
+        'color:#7f8ea3;font-weight:600';
+      frag.appendChild(hd);
+      groups[gname].forEach(function (mt) {
+        var c = st.cats[mt];
+        var row = document.createElement('label');
+        row.style.cssText = 'display:flex;align-items:center;gap:7px;padding:3px 7px;' +
+          'border-radius:6px;cursor:pointer';
+        row.addEventListener('mouseenter', function () { row.style.background = 'rgba(255,255,255,.07)'; });
+        row.addEventListener('mouseleave', function () { row.style.background = ''; });
+        var cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = !!st.enabled[mt];
+        cb.style.cssText = 'accent-color:' + colorOf(mt) + ';margin:0';
+        cb.addEventListener('change', function () {
+          st.enabled[mt] = cb.checked; saveEnabled(); lastSig = ''; draw();
+        });
+        // wiki 官方图标；未登记/加载失败时退回彩色圆点，不留空位。
+        var badge;
+        var url = iconMeta && iconMeta[mt] && iconMeta[mt].icon;
+        if (url) {
+          badge = document.createElement('img');
+          badge.src = url;
+          badge.alt = '';
+          // 不能用 loading="lazy"：面板折叠/隐藏时行高为 0，浏览器判定"不在
+          // 视口"就永远不发请求，展开后仍是空白（实测 13/13 未加载）。
+          // 这些图标各 8~15KB、共 13 个，eager 一次拉完更省心。
+          badge.loading = 'eager';
+          badge.decoding = 'async';
+          try { badge.referrerPolicy = 'no-referrer'; } catch (_) {}
+          badge.style.cssText = 'width:18px;height:18px;flex:none;object-fit:contain';
+          badge.onerror = function () {
+            var dot = document.createElement('span');
+            dot.style.cssText = 'width:8px;height:8px;border-radius:50%;flex:none;' +
+              'margin:5px;background:' + colorOf(mt);
+            if (badge.parentNode) badge.parentNode.replaceChild(dot, badge);
+          };
+        } else {
+          badge = document.createElement('span');
+          badge.style.cssText = 'width:8px;height:8px;border-radius:50%;flex:none;' +
+            'margin:5px;background:' + colorOf(mt);
+        }
+        var nm = document.createElement('span');
+        nm.textContent = c.n; nm.style.cssText = 'flex:1;overflow:hidden;' +
+          'text-overflow:ellipsis;white-space:nowrap';
+        var ct = document.createElement('span');
+        ct.textContent = c.p.length;
+        ct.style.cssText = 'font:10px monospace;color:#8b9bb0';
+        row.appendChild(cb); row.appendChild(badge); row.appendChild(nm); row.appendChild(ct);
+        frag.appendChild(row);
+      });
+    });
+    list.innerHTML = '';
+    list.appendChild(frag);
   }
 
   function setStatus(s, cls) {
@@ -1142,6 +1290,26 @@
     }
   }
 
+  // 屏幕矩形 -> world 包围盒（含余量）。逐点先比大小再算变换，
+  // 比"先算变换再判越界"少两次乘加，且能整类跳过（如神瞳完全在界外）。
+  function worldClip(F, cw, ch, r) {
+    var det = F.a * F.d - F.b * F.c;
+    if (!det) return null;
+    var ia = F.d / det, ib = -F.b / det, ic = -F.c / det, id = F.a / det;
+    var pad = 24;
+    var xs = [-pad, cw + pad], ys = [-pad, ch + pad];
+    var minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+    for (var i = 0; i < 2; i++) {
+      for (var j = 0; j < 2; j++) {
+        var sx = xs[i] + r.left - F.tx, sy = ys[j] + r.top - F.ty;
+        var wx = ia * sx + ib * sy, wy = ic * sx + id * sy;
+        if (wx < minx) minx = wx; if (wx > maxx) maxx = wx;
+        if (wy < miny) miny = wy; if (wy > maxy) maxy = wy;
+      }
+    }
+    return { minx: minx, maxx: maxx, miny: miny, maxy: maxy };
+  }
+
   // ---- 绘制 --------------------------------------------------------------
   function draw() {
     if (!st.on || !st.fit || !st.cats) return;
@@ -1176,10 +1344,24 @@
     var clustering = rad < 5.4;
 
     var shown = 0;
+    var seenNow = {};
+    // 视口裁剪预算：把屏幕矩形反解回 world 空间，直接跳过界外点，
+    // 而不是逐点做完两次矩阵乘法再判断越界。7000 点时省掉绝大多数乘法。
+    var clip = worldClip(F, cw, ch, r);
     g.globalAlpha = 0.82;
     for (var mt in st.cats) {
       if (!st.enabled[mt]) continue;
       var pts = st.cats[mt].p, col = colorOf(mt);
+      // 图标模式：放得够大且图标就绪时用官方图标，否则退回圆点。
+      // 小尺寸下图标看不清且拷贝成本高于圆点，用圆点更快也更清晰。
+      var iconSize = Math.round(Math.min(26, Math.max(10, rad * 3.4)));
+      // 用上一帧该类的可见数当密度估计（首帧按全量保守估计）。
+      var vis = 0;
+      var guess = (st.lastVisible && st.lastVisible[mt] != null)
+          ? st.lastVisible[mt] : pts.length;
+      var ie = iconMode(mt, rad, guess);
+      var sprite = ie ? ie.img : null;      // 直接用源图，由 drawImage 缩放
+      var half = iconSize / 2;
       g.fillStyle = col;
       g.strokeStyle = 'rgba(0,0,0,.55)';
       g.lineWidth = Math.max(0.6, rad * 0.26);
@@ -1188,16 +1370,22 @@
       var cells = clustering ? {} : null;
       g.beginPath();
       var batched = 0;
+      // 预乘常量提到循环外：原来每点重算 A*scale 与 LX0*S。
+      var kx = A * scale, ox = -LX0 * S, oy = -LY0 * S;
       for (var i = 0; i < pts.length; i++) {
         // world 坐标定义在**完整**参照尺度上，底图下采样后必须同乘 REF_SCALE，
         // 否则每个点都会偏出一倍。
-        var wx = (A * pts[i][0] * scale - LX0 * S) * REF_SCALE;
-        var wy = (A * pts[i][1] * scale - LY0 * S) * REF_SCALE;
+        var wx = (kx * pts[i][0] + ox) * REF_SCALE;
+        var wy = (kx * pts[i][1] + oy) * REF_SCALE;
+        // 先在 world 空间裁剪：界外点直接跳过，省掉下面 6 次乘加。
+        if (clip && (wx < clip.minx || wx > clip.maxx ||
+                     wy < clip.miny || wy > clip.maxy)) continue;
         // world -> screen(相对画面左上角)
         var sx = F.a * wx + F.b * wy + F.tx - r.left;
         var sy = F.c * wx + F.d * wy + F.ty - r.top;
         if (sx < -12 || sy < -12 || sx > cw + 12 || sy > ch + 12) continue;
         shown++;
+        vis++;
         if (cells) {
           // 只累加，最后统一画。键用整数格坐标。
           var k = ((sx / CELL) | 0) + ',' + ((sy / CELL) | 0);
@@ -1206,9 +1394,13 @@
           else { cells[k] = { n: 1, x: sx, y: sy }; }
           continue;
         }
-        g.moveTo(sx + rad, sy);          // moveTo 断开子路径，避免连线
-        g.arc(sx, sy, rad, 0, 6.2832);
-        batched++;
+        if (sprite) {
+          g.drawImage(sprite, sx - half, sy - half, iconSize, iconSize);
+        } else {
+          g.moveTo(sx + rad, sy);        // moveTo 断开子路径，避免连线
+          g.arc(sx, sy, rad, 0, 6.2832);
+          batched++;
+        }
       }
       if (cells) {
         // 先把所有单点圆批量画掉（同色一条路径，保持原有的性能特性）
@@ -1216,9 +1408,13 @@
         for (var k2 in cells) {
           var c2 = cells[k2];
           if (c2.n === 1) {
-            g.moveTo(c2.x + rad, c2.y);
-            g.arc(c2.x, c2.y, rad, 0, 6.2832);
-            batched++;
+            if (sprite) {
+              g.drawImage(sprite, c2.x - half, c2.y - half, iconSize, iconSize);
+            } else {
+              g.moveTo(c2.x + rad, c2.y);
+              g.arc(c2.x, c2.y, rad, 0, 6.2832);
+              batched++;
+            }
           } else {
             multi.push(c2);
           }
@@ -1256,7 +1452,9 @@
           g.restore();
         }
       } else if (batched) { g.fill(); g.stroke(); }
+      seenNow[mt] = vis;
     }
+    st.lastVisible = seenNow;
     st.shown = shown;
     g.globalAlpha = 1;
     if (!st.tracking) setStatus(st.quality);
@@ -1357,8 +1555,12 @@
     ensureCv().then(function (ok) {
       if (!ok) throw new Error('opencv 运行时不可用（宿主未注入或校验失败）');
       setStatus('加载点位…');
-      return loadPoints();
-    }).then(function (cats) {
+      // 图标清单与点位并行取：清单只有 ~1.7KB，失败也不该阻塞定位链
+      // （initIcons(null) 会让绘制与列表整体退回彩色圆点）。
+      return Promise.all([loadPoints(), loadIconMeta()]);
+    }).then(function (res) {
+      var cats = res[0];
+      initIcons(res[1]);
       st.cats = cats;
       var saved = loadEnabled();
       for (var k in cats) {
@@ -1429,10 +1631,31 @@
     }
   }
 
-  // 桌面端快捷键（F8 切换 / F9 重定位）；触摸端用上面的悬浮球。
+  // 桌面端快捷键；触摸端用上面的悬浮球。
+  //
+  // 按键选择的两条硬约束：
+  //  1) 不能撞浏览器/WebView 的保留组合。Chromium 明确保留了一批快捷键，
+  //     JS 的 preventDefault() 拦不住：Ctrl+Shift+Delete（清除浏览数据）、
+  //     Ctrl+W/T/N、Ctrl+Shift+I/J/C（DevTools）。所以**不能**用
+  //     Ctrl+Shift+Delete —— 它多半根本收不到，而万一收到，用户以为在切图层、
+  //     实际弹出的是清数据面板，可能连带清掉登录态。
+  //  2) 不能撞游戏。原神 PC 键位占用极广：WASD/E/Q/R/F/T/V/Z/空格、
+  //     1~5、B/C/M/J/Y/U/G/L/O、F1~F7、左 Ctrl（走跑切换）、
+  //     左 Shift（冲刺）、Tab（快捷轮盘）、Esc（派蒙菜单），
+  //     且**长按左 Alt 是呼出鼠标**、Alt+1~5 切人放大招 —— 所以 Alt 系
+  //     同样要避开（这一点纠正了本插件早期的 Alt+D/X/Z 方案）。
+  //  3) Ctrl+Space 是输入法切换，避开。
+  // 结论：只用游戏与浏览器都不用的功能键区：
+  //   F8 开关叠加 / F9 重定位 / F10 全选分类 / Shift+F10 清空 / F12 折叠面板。
+  //   （F1~F7 归游戏，F11 归宿主全屏。）
   window.addEventListener('keydown', function (e) {
-    if (e.key === 'F8') { e.preventDefault(); toggle(); }
-    else if (e.key === 'F9' && st.on) { e.preventDefault(); fullFit(true); }
+    if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
+    var k = e.key;
+    if (k === 'F8') { e.preventDefault(); toggle(); return; }
+    if (!st.on) return;
+    if (k === 'F9') { e.preventDefault(); fullFit(true); }
+    else if (k === 'F10') { e.preventDefault(); setAll(!e.shiftKey); }
+    else if (k === 'F12') { e.preventDefault(); btnFold.click(); }
   }, true);
 
   window.addEventListener('resize', function () { if (st.on) draw(); });

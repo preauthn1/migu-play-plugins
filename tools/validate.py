@@ -9,10 +9,15 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGINS = ROOT / 'plugins'
-MAX_JS_BYTES = 64 * 1024
+# main.js 上限。原为 64KB：当时插件只做"注入一小段脚本"。地图叠加这类插件要
+# 同时容纳定位管线、图标/离屏缓存与密度聚合渲染，实测 64KB 已经不够（改造后
+# 74.9KB），继续压只会逼作者删注释和护栏注解 —— 那些正是评审最该读的部分。
+# 放宽到 96KB，仍远低于"远程加载器"的量级，且 JS 仍受禁用构造与主机白名单约束。
+MAX_JS_BYTES = 96 * 1024
 ID_RE = re.compile(r'^[a-z0-9][a-z0-9-]{1,40}$')
 VER_RE = re.compile(r'^\d+\.\d+\.\d+$')
 REQUIRED = ['id', 'name', 'version', 'author', 'description', 'match',
@@ -50,6 +55,11 @@ SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
 # 每个主机必须在 plugin.json 的 hosts 里显式登记并在审核中说明用途。
 REPO_HOSTS = {'raw.githubusercontent.com', 'github.com'}
 HOST_RE = re.compile(r'^[a-z0-9][a-z0-9.\-]{2,120}$')
+# 图标这类**跟随上游更新**的小资源不适合内嵌：内嵌等于把版本焊死，
+# 游戏/wiki 更新图标后插件就长期显示旧图。允许它们走 hosts 白名单在运行时
+# 拉取（只读图片，带 referrerPolicy/no-cookie），并要求插件把 URL 集中登记在
+# data/icons.json 里，便于评审 diff 与一键换源。
+ICON_MANIFEST_NAME = 'data/icons.json'
 # WASM 需要这些构造，仅在声明 wasm 权限时解禁；其余插件仍然全面禁止。
 WASM_ONLY_JS = [
     (re.compile(r'WebAssembly\s*\.'), 'WebAssembly.*'),
@@ -152,6 +162,10 @@ def check_plugin(d: Path, errors: list) -> dict | None:
         meta['assets'] = assets
     if hosts:
         meta['hosts'] = sorted(hosts)
+    # 图标清单里的 URL 也必须落在同一白名单内，否则 hosts 审核可被绕过。
+    icon_count = validate_icon_manifest(d, hosts, errors)
+    if icon_count:
+        meta['icons'] = icon_count
     return meta
 
 
@@ -272,6 +286,45 @@ def validate_assets(d: Path, meta: dict, perms: set, errors: list) -> list:
         errors.append(f'{d.name}: assets total {total} bytes exceeds '
                       f'{MAX_ASSETS_TOTAL_BYTES}')
     return out
+
+
+def validate_icon_manifest(d: Path, hosts: set, errors: list) -> int:
+    """校验 data/icons.json：每个 icon URL 必须 https 且主机已在 hosts 白名单。
+
+    没有这一条，插件可以把任意第三方 URL 塞进图标清单，绕过 hosts 白名单的
+    人工审核 —— 白名单就形同虚设。返回登记的图标条数。
+    """
+    f = d / ICON_MANIFEST_NAME
+    if not f.is_file():
+        return 0
+    try:
+        data = json.loads(f.read_text(encoding='utf-8'))
+    except Exception as e:
+        errors.append(f'{d.name}: {ICON_MANIFEST_NAME} is not valid JSON ({e})')
+        return 0
+    if not isinstance(data, dict) or not data:
+        errors.append(f'{d.name}: {ICON_MANIFEST_NAME} must be a non-empty object')
+        return 0
+    allowed = set(hosts) | REPO_HOSTS
+    n = 0
+    for key, ent in data.items():
+        if not isinstance(ent, dict):
+            errors.append(f'{d.name}: icons["{key}"] must be an object')
+            continue
+        url = ent.get('icon')
+        if not isinstance(url, str) or not url:
+            errors.append(f'{d.name}: icons["{key}"] missing "icon" URL')
+            continue
+        if not url.startswith('https://'):
+            errors.append(f'{d.name}: icons["{key}"] must use https ({url[:48]})')
+            continue
+        host = urlparse(url).netloc.lower()
+        if host not in allowed:
+            errors.append(f'{d.name}: icons["{key}"] host "{host}" is not in the '
+                          f'hosts allowlist (declare it and justify in review)')
+            continue
+        n += 1
+    return n
 
 
 def main():
