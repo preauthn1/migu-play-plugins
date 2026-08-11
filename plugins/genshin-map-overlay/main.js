@@ -110,7 +110,7 @@
   }
 
 
-  var PLUGIN_VER = '0.9.2';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.9.3';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
