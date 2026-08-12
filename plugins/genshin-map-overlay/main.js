@@ -110,7 +110,7 @@
   }
 
 
-  var PLUGIN_VER = '0.11.0';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.12.0';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -143,7 +143,8 @@
     moveAccum: 0,             // 上次定位成功以来的累计屏幕位移(px)
     // 取帧管线。trackGrabs 是回归哨兵：worker 模式下必须恒为 0。
     // fitGrabs 允许非 0——重定位要 960px 宽帧、频次低(实测 0.4/s)，仍走主线程。
-    pump: { mode: 'off', frames: 0, trackGrabs: 0, fitGrabs: 0, why: '' }
+    pump: { mode: 'off', frames: 0, trackGrabs: 0, fitGrabs: 0, why: '' },
+    descs: null               // 说明索引，见 loadDescs
   };
 
   var TRACK_W = 384;   // 跟踪取帧宽度，帧泵按它预缩放；须与 trackStep 一致
@@ -689,6 +690,161 @@
     }, { root: list, rootMargin: '120px' });
     for (var n = 0; n < imgs.length; n++) iconIO.observe(imgs[n]);
   }
+
+  // ---- 点位说明弹窗 -------------------------------------------------------
+  // 用户要求"点击点位拉说明图"。wiki 的说明来自 Data:Map/point/<id>，
+  // 24161 个页面里只有 6809 个有实质内容（其余是"欢迎在下方留言~"这类
+  // 占位符），所以只给**确实有说明**的点建索引，避免点开一片空白。
+  //
+  // 事件模型是这里最需要小心的地方：叠加画布是 pointer-events:none，
+  // 点击必须照常传给游戏（否则地图拖不动、技能放不出）。所以**不能**给
+  // canvas 开 pointer-events，而是在 window 上捕获阶段监听，命中才吞事件。
+  var hitList = null;      // 当前帧可见且有说明的点（draw 里填）
+  var popup = null;
+  var popupId = '';
+  // 命中半径：手指/鼠标精度，比图标本身略大一点更好点中
+  var HIT_R = 14;
+
+  function findHit(cx, cy) {
+    if (!hitList || !hitList.length) return null;
+    var el = st.surface || findSurface();
+    if (!el) return null;
+    var r = el.getBoundingClientRect();
+    // hitList 存的是相对画面左上角的坐标
+    var x = cx - r.left, y = cy - r.top;
+    var best = null, bd = HIT_R * HIT_R;
+    for (var i = 0; i < hitList.length; i++) {
+      var h = hitList[i];
+      var dx = h.x - x, dy = h.y - y;
+      var d = dx * dx + dy * dy;
+      if (d <= bd) { bd = d; best = h; }
+    }
+    return best;
+  }
+
+  function closePopup() {
+    if (popup && popup.parentNode) popup.parentNode.removeChild(popup);
+    popup = null;
+    popupId = '';
+  }
+
+  function showPopup(hit, cx, cy) {
+    closePopup();
+    var d = st.descs && st.descs[hit.id];
+    if (!d) return;
+    popupId = hit.id;
+    popup = document.createElement('div');
+    popup.style.cssText = 'position:fixed;z-index:2147483100;max-width:340px;' +
+      'background:rgba(16,20,26,.97);color:#dfe7f1;border:1px solid #2f3d4f;' +
+      'border-radius:10px;padding:10px 12px;font:12px/1.6 system-ui,' +
+      '-apple-system,"Segoe UI",sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.6);' +
+      'pointer-events:auto;user-select:text;-webkit-user-select:text';
+
+    var head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:6px';
+    var nm = document.createElement('div');
+    var cat = st.cats && st.cats[hit.mt];
+    nm.textContent = hit.t || (cat ? cat.n : '点位');
+    nm.style.cssText = 'flex:1;font-weight:600;color:#fff;overflow:hidden;' +
+      'text-overflow:ellipsis;white-space:nowrap';
+    var x = document.createElement('div');
+    x.textContent = '×';
+    x.style.cssText = 'cursor:pointer;padding:0 4px;color:#8b9bb0;font-size:16px;' +
+      'line-height:1';
+    x.addEventListener('click', function (ev) {
+      ev.stopPropagation(); closePopup();
+    });
+    head.appendChild(nm); head.appendChild(x);
+    popup.appendChild(head);
+
+    if (hit.t && cat && cat.n !== hit.t) {
+      var sub = document.createElement('div');
+      sub.textContent = cat.n;
+      sub.style.cssText = 'color:#7f8ea3;font-size:11px;margin:-4px 0 6px';
+      popup.appendChild(sub);
+    }
+    if (d.t) {
+      var tx = document.createElement('div');
+      tx.textContent = d.t;
+      tx.style.cssText = 'white-space:pre-wrap;word-break:break-word;' +
+        'max-height:150px;overflow:auto';
+      popup.appendChild(tx);
+    }
+    if (d.i && d.i.length) {
+      for (var i = 0; i < d.i.length && i < 3; i++) {
+        var im = document.createElement('img');
+        im.src = d.i[i];
+        im.alt = '';
+        im.decoding = 'async';
+        try { im.referrerPolicy = 'no-referrer'; } catch (_) {}
+        im.style.cssText = 'display:block;max-width:100%;margin-top:8px;' +
+          'border-radius:6px;background:#0b0e13';
+        // 图挂了就把占位去掉，别留一个破图图标
+        im.onerror = (function (node) {
+          return function () {
+            if (node.parentNode) node.parentNode.removeChild(node);
+          };
+        })(im);
+        popup.appendChild(im);
+      }
+    }
+    if (d.v) {
+      var a = document.createElement('a');
+      a.href = d.v;
+      a.target = '_blank';
+      a.rel = 'noreferrer noopener';
+      a.textContent = '▶ 参考视频';
+      a.style.cssText = 'display:inline-block;margin-top:8px;color:#7fd6c0;' +
+        'text-decoration:none';
+      popup.appendChild(a);
+    }
+    // 弹窗自身不该把点击漏给游戏（否则点文字会触发游戏操作）
+    popup.addEventListener('pointerdown', function (ev) { ev.stopPropagation(); }, true);
+    popup.addEventListener('click', function (ev) { ev.stopPropagation(); }, true);
+    document.body.appendChild(popup);
+    placePopup(cx, cy);
+    // 图片是异步加载的：首次定位时 <img> 高度还是 0，弹窗会在图片到达后
+    // 突然变高并溢出屏幕底部（截图复核时发现的真实缺陷）。所以每张图
+    // 加载完都要重新摆一次。
+    var imgs = popup.querySelectorAll('img');
+    for (var q = 0; q < imgs.length; q++) {
+      imgs[q].addEventListener('load', function () {
+        if (popup) placePopup(cx, cy);
+      });
+    }
+  }
+
+  // 定位：优先放在点位右下；放不下就翻到另一侧；仍放不下就贴边并让内容滚动。
+  // 必须限制最大高度——说明图原始尺寸可达 1920x1080，不限高会直接顶出屏幕。
+  function placePopup(cx, cy) {
+    if (!popup) return;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var M = 8;
+    popup.style.maxHeight = (vh - M * 2) + 'px';
+    popup.style.overflowY = 'auto';
+    var pw = popup.offsetWidth, ph = popup.offsetHeight;
+    var L = cx + 14, T = cy + 14;
+    if (L + pw > vw - M) L = cx - pw - 14;
+    if (T + ph > vh - M) T = cy - ph - 14;
+    // 翻转后仍越界（点位靠近屏幕边角）就直接贴边
+    popup.style.left = Math.max(M, Math.min(L, vw - pw - M)) + 'px';
+    popup.style.top = Math.max(M, Math.min(T, vh - ph - M)) + 'px';
+  }
+
+  // 捕获阶段监听 window：命中才吞事件，否则原样放行给游戏。
+  // 用 pointerdown 而非 click：云游戏页面常自己吞 click 做手势识别。
+  window.addEventListener('pointerdown', function (e) {
+    if (!st.on || !st.fit) return;
+    // 面板/弹窗内部的点击不参与命中
+    if (popup && popup.contains(e.target)) return;
+    if (panel && panel.contains(e.target)) return;
+    var hit = findHit(e.clientX, e.clientY);
+    if (!hit) { closePopup(); return; }
+    if (hit.id === popupId) { closePopup(); return; }  // 再点一次收起
+    e.preventDefault();
+    e.stopPropagation();
+    showPopup(hit, e.clientX, e.clientY);
+  }, true);
 
   function setStatus(s, cls) {
     st.quality = s;
@@ -1492,6 +1648,9 @@
 
     var shown = 0;
     var seenNow = {};
+    // 每帧重建命中索引：变换随跟踪持续变化，缓存屏幕坐标没有意义。
+    // 只装有说明的可见点，实测同屏几十个，重建成本可忽略。
+    hitList = st.descs ? [] : null;
     // 视口裁剪预算：把屏幕矩形反解回 world 空间，直接跳过界外点，
     // 而不是逐点做完两次矩阵乘法再判断越界。7000 点时省掉绝大多数乘法。
     var clip = worldClip(F, cw, ch, r);
@@ -1533,6 +1692,13 @@
         if (sx < -12 || sy < -12 || sx > cw + 12 || sy > ch + 12) continue;
         shown++;
         vis++;
+        // 命中测试索引：只记可见且**有说明**的点（e[4] 是说明 id）。
+        // 全 56331 点都记会白白吃内存；实测有说明的仅 6497 个，
+        // 且屏幕上同时可见的通常几十个。
+        if (hitList && pts[i].length >= 5 && pts[i][4]) {
+          hitList.push({ x: sx, y: sy, id: pts[i][4],
+                         t: pts[i][3] || '', mt: mt });
+        }
         if (cells) {
           // 只累加，最后统一画。键用整数格坐标。
           var k = ((sx / CELL) | 0) + ',' + ((sy / CELL) | 0);
@@ -1601,6 +1767,27 @@
       } else if (batched) { g.fill(); g.stroke(); }
       seenNow[mt] = vis;
     }
+    // 可点击标记：给有说明的点描一圈细白环，否则用户无从知道哪些能点开。
+    // 放在所有分类画完之后单独一遍，避免打断上面"同色共路径"的批量优化
+    // （那是把 7118 点从 9.2ms/帧降到可用的关键）。
+    // 只在放大到不再聚合时画（clustering = rad < 5.4）：小尺寸下环会糊成
+    // 一团噪点，且与聚合簇对不上位。
+    // 必须排除聚合态：聚合时单点不单独绘制，画环会变成"环浮在簇旁边"的错位。
+    if (hitList && hitList.length && !clustering) {
+      g.save();
+      g.globalAlpha = 0.9;
+      g.strokeStyle = 'rgba(255,255,255,.85)';
+      g.lineWidth = Math.max(0.8, rad * 0.22);
+      g.beginPath();
+      var hr = rad + Math.max(1.6, rad * 0.5);
+      for (var hi = 0; hi < hitList.length; hi++) {
+        var hp = hitList[hi];
+        g.moveTo(hp.x + hr, hp.y);
+        g.arc(hp.x, hp.y, hr, 0, 6.2832);
+      }
+      g.stroke();
+      g.restore();
+    }
     st.lastVisible = seenNow;
     st.shown = shown;
     g.globalAlpha = 1;
@@ -1664,7 +1851,24 @@
     });
   }
 
+  // 说明索引：{id: {i:[图片直链], t:"文字", v:"视频链接"}}。
+  // 与点位分开发布：851KB 且只服务 6497 个点（56331 里的 11.5%），
+  // 塞进 points.json 会让每次定位都白解析它。失败不阻塞——
+  // 拿不到就只是点不开说明，定位与绘制照常。
+  function loadDescs() {
+    var A = window.__miguPluginAssets || {};
+    if (A['data/descs.json']) {
+      try { return Promise.resolve(JSON.parse(A['data/descs.json'])); }
+      catch (e) { return Promise.resolve(null); }
+    }
+    return fetch(REPO + 'data/descs.json').then(function (r) {
+      if (!r.ok) throw new Error('descs HTTP ' + r.status);
+      return r.json();
+    }).catch(function () { return null; });
+  }
+
   function buildRef() {
+
     // 单张预拼底图（sha256 校验）；wiki OSS 无 CORS 头，逐块拉必死。
     return new Promise(function (resolve, reject) {
       var c = document.createElement('canvas');
@@ -1704,11 +1908,15 @@
       setStatus('加载点位…');
       // 图标清单与点位并行取：清单只有 ~1.7KB，失败也不该阻塞定位链
       // （initIcons(null) 会让绘制与列表整体退回彩色圆点）。
-      return Promise.all([loadPoints(), loadIconMeta()]);
+      return Promise.all([loadPoints(), loadIconMeta(), loadDescs()]);
     }).then(function (res) {
       var cats = res[0];
       initIcons(res[1]);
       st.cats = cats;
+      st.descs = res[2] || null;
+      if (st.descs) {
+        log('INFO', '说明索引就绪：' + Object.keys(st.descs).length + ' 个点可点击查看');
+      }
       var saved = loadEnabled();
       for (var k in cats) {
         st.enabled[k] = saved ? !!saved[k] : (k === '201' || k === '100');
@@ -1773,6 +1981,8 @@
       if (!st.raf && !st.idleTimer) st.raf = requestAnimationFrame(loop);
     } else {
       st.tracking = false;
+      closePopup();               // 关掉叠加还留着说明弹窗会挡住游戏画面
+      hitList = null;
       stopGrabPump('叠加关闭');   // 否则 worker 继续 read() 轨道，白烧 CPU
       if (st.raf) { cancelAnimationFrame(st.raf); st.raf = 0; }
       if (st.idleTimer) { clearTimeout(st.idleTimer); st.idleTimer = 0; }
@@ -1801,6 +2011,9 @@
     var k = e.key;
     if (k === 'F8') { e.preventDefault(); toggle(); return; }
     if (!st.on) return;
+    // Escape 收弹窗。不 preventDefault：游戏里 Esc 通常是打开菜单，
+    // 只在确实有弹窗时才吞掉这次按键。
+    if (k === 'Escape' && popup) { e.preventDefault(); closePopup(); return; }
     if (k === 'F9') { e.preventDefault(); fullFit(true); }
     else if (k === 'F10') { e.preventDefault(); setAll(!e.shiftKey); }
     else if (k === 'F12') { e.preventDefault(); btnFold.click(); }
@@ -1819,7 +2032,16 @@
       renderList();
     },
     grab: function () { var el = findSurface(); return el ? grab(el, 320) : { err: 'NO_SURFACE' }; },
-    pumpInfo: function () { return st.pump; }
+    pumpInfo: function () { return st.pump; },
+    // 说明弹窗的测试钩子：靶场用它核对命中与内容，不读任何真值
+    hits: function () { return hitList ? hitList.slice() : null; },
+    popupInfo: function () {
+      if (!popup) return null;
+      return { id: popupId, text: popup.textContent || '',
+               imgs: popup.querySelectorAll('img').length,
+               links: popup.querySelectorAll('a').length };
+    },
+    setDescs: function (d) { st.descs = d || null; lastSig = ''; draw(); }
   };
   setStatus('按 F8 开启叠加');
 })();
