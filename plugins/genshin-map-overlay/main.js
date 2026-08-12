@@ -110,7 +110,7 @@
   }
 
 
-  var PLUGIN_VER = '0.10.1';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.11.0';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -569,6 +569,9 @@
     ensureIconMeta();
     var q = (search.value || '').trim();
     var frag = document.createDocumentFragment();
+    // 本轮新建的待加载图标，交给 IntersectionObserver 按滚动喂 src。
+    // 504 类全 eager 会并发 493 请求 / 3.4MB / 666ms longtask（实测）。
+    pendingIcons = [];
     var keys = Object.keys(st.cats).sort(function (a, b) {
       return st.cats[b].p.length - st.cats[a].p.length;
     });
@@ -605,12 +608,19 @@
         var url = iconMeta && iconMeta[mt] && iconMeta[mt].icon;
         if (url) {
           badge = document.createElement('img');
-          badge.src = url;
           badge.alt = '';
-          // 不能用 loading="lazy"：面板折叠/隐藏时行高为 0，浏览器判定"不在
-          // 视口"就永远不发请求，展开后仍是空白（实测 13/13 未加载）。
-          // 这些图标各 8~15KB、共 13 个，eager 一次拉完更省心。
-          badge.loading = 'eager';
+          // **必须懒加载，且不能用 loading="lazy"**，两个坑都踩过：
+          //
+          // 1) loading="lazy" 不管用：面板折叠/隐藏时行高为 0，浏览器判定
+          //    "不在视口"就永远不发请求，展开后仍是空白（13 类时实测 13/13
+          //    未加载）。
+          // 2) 但也不能 eager：分类从 13 扩到 504 后，一次性 eager 会并发拉
+          //    **493 个请求 / 3.4MB**，实测造成 666ms 的 longtask（合计
+          //    1397ms）——足以卡住正在跑的云游戏串流。
+          //
+          // 所以自己用 IntersectionObserver 按滚动位置喂 src：root 设为列表
+          // 容器，只有真正滚到可见处才请求。observer 见 iconIO。
+          badge.dataset.src = url;
           badge.decoding = 'async';
           try { badge.referrerPolicy = 'no-referrer'; } catch (_) {}
           badge.style.cssText = 'width:18px;height:18px;flex:none;object-fit:contain';
@@ -620,6 +630,7 @@
               'margin:5px;background:' + colorOf(mt);
             if (badge.parentNode) badge.parentNode.replaceChild(dot, badge);
           };
+          pendingIcons.push(badge);
         } else {
           badge = document.createElement('span');
           badge.style.cssText = 'width:8px;height:8px;border-radius:50%;flex:none;' +
@@ -637,6 +648,46 @@
     });
     list.innerHTML = '';
     list.appendChild(frag);
+    observeIcons();
+  }
+
+  // ---- 图标懒加载 ---------------------------------------------------------
+  // 见 renderList 里 badge 的注释：loading="lazy" 在折叠面板里永不触发，
+  // eager 又会一次并发 493 请求。自己用 IntersectionObserver，root 设为
+  // 列表容器，滚到哪儿加载哪儿；不支持 IO 的环境退回"可见即全量加载"。
+  var pendingIcons = [];
+  var iconIO = null;
+
+  function loadIcon(img) {
+    var u = img.dataset && img.dataset.src;
+    if (!u || img.src) return;
+    img.src = u;
+    if (img.dataset) delete img.dataset.src;
+  }
+
+  function observeIcons() {
+    var imgs = pendingIcons;
+    pendingIcons = [];
+    if (!imgs.length) return;
+    if (typeof IntersectionObserver !== 'function') {
+      // 没有 IO：至少别一次全发，分批喂（每帧 12 个）避免长任务
+      var i = 0;
+      (function step() {
+        for (var k = 0; k < 12 && i < imgs.length; k++, i++) loadIcon(imgs[i]);
+        if (i < imgs.length) requestAnimationFrame(step);
+      })();
+      return;
+    }
+    if (iconIO) iconIO.disconnect();
+    iconIO = new IntersectionObserver(function (entries) {
+      for (var j = 0; j < entries.length; j++) {
+        if (entries[j].isIntersecting) {
+          loadIcon(entries[j].target);
+          iconIO.unobserve(entries[j].target);
+        }
+      }
+    }, { root: list, rootMargin: '120px' });
+    for (var n = 0; n < imgs.length; n++) iconIO.observe(imgs[n]);
   }
 
   function setStatus(s, cls) {
