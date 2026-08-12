@@ -110,7 +110,7 @@
   }
 
 
-  var PLUGIN_VER = '0.9.3';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.10.1';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -140,8 +140,13 @@
     // 重定位调度（依据见 fullFit 前的实测注释）
     lastFitAttempt: 0,        // 最近一次尝试，无论成败——退避靠它，旧代码没有它
     fitFails: 0, fitBackoff: 0,  // 连续失败次数与当前退避间隔(ms)
-    moveAccum: 0              // 上次定位成功以来的累计屏幕位移(px)
+    moveAccum: 0,             // 上次定位成功以来的累计屏幕位移(px)
+    // 取帧管线。trackGrabs 是回归哨兵：worker 模式下必须恒为 0。
+    // fitGrabs 允许非 0——重定位要 960px 宽帧、频次低(实测 0.4/s)，仍走主线程。
+    pump: { mode: 'off', frames: 0, trackGrabs: 0, fitGrabs: 0, why: '' }
   };
+
+  var TRACK_W = 384;   // 跟踪取帧宽度，帧泵按它预缩放；须与 trackStep 一致
 
   // ---- DOM：叠加画布(pointer-events:none) + 点位列表面板，事件不漏给游戏 ---
   var layer = document.createElement('canvas');
@@ -736,6 +741,91 @@
              cssK: b.w / tw, cssKy: b.h / th, std: std };
   }
 
+  // ---- 帧泵：跟踪用的取帧搬到 worker ---------------------------------------
+  // 理由、实测数据与协议见 vendor/grab_pump.js 顶部注释。要点：主线程每帧
+  // drawImage(video→canvas) 回读 GPU 纹理真机 13.9ms，是掉帧主因；
+  // MediaStreamTrackProcessor 让 worker 直读 VideoFrame，主线程占用归零。
+  // 帧泵不可用（非 MediaStream / 旧 WebView）时必须能回退主线程 grab。
+  var pumpWorker = null, pumpLatest = null;
+
+  function stopGrabPump(why) {
+    if (pumpWorker) { try { pumpWorker.terminate(); } catch (_) {} pumpWorker = null; }
+    pumpLatest = null;
+    st.pump.mode = 'off';
+    if (why) st.pump.why = why;
+  }
+
+  function pumpBail(why) { st.pump.mode = 'main'; st.pump.why = why; return false; }
+
+  // true = 已就绪/正在启动；false = 本环境只能走主线程。
+  function startGrabPump(el) {
+    if (pumpWorker) return true;
+    if (typeof MediaStreamTrackProcessor !== 'function' ||
+        typeof OffscreenCanvas !== 'function') return pumpBail('API 缺失');
+    var ms = el && el.srcObject;
+    if (!ms || typeof ms.getVideoTracks !== 'function') {
+      // 理由要能区分两种情况：canvas 画面却报 MSE/HLS 会把排障带偏。
+      return pumpBail(el && el.tagName === 'VIDEO'
+          ? '<video> 无 srcObject(MSE/HLS)'
+          : '画面是 <' + ((el && el.tagName) || '?').toLowerCase() + '>');
+    }
+    var track = ms.getVideoTracks()[0];
+    if (!track) return pumpBail('无视频轨');
+    var psrc = assetText('vendor/grab_pump.js');
+    if (!psrc) return pumpBail('帧泵源码未注入');
+    try {
+      var proc = new MediaStreamTrackProcessor({ track: track });
+      pumpWorker = new Worker(blobUrlOf(psrc));
+      pumpWorker.onmessage = function (ev) {
+        var m = ev.data || {};
+        if (m.type === 'frame') {
+          st.pump.frames++;
+          pumpLatest = { grey: new Uint8Array(m.grey), w: m.w, h: m.h, std: m.std };
+        } else if (m.type === 'ready') {
+          st.pump.mode = 'worker';
+          log('INFO', '帧泵就绪：取帧已离开主线程');
+        } else {
+          log('WARN', '帧泵' + (m.type === 'end' ? '轨道结束' : '失败: ' + m.message) +
+              '，回退主线程取帧');
+          stopGrabPump(m.message || '轨道结束');
+          st.pump.mode = 'main';
+        }
+      };
+      pumpWorker.onerror = function (e) {
+        log('WARN', '帧泵 onerror: ' + ((e && e.message) || '未知') + '，回退主线程');
+        stopGrabPump('onerror');
+        st.pump.mode = 'main';
+      };
+      pumpWorker.postMessage({ type: 'start', stream: proc.readable, tw: TRACK_W },
+                             [proc.readable]);
+      st.pump.mode = 'starting';
+      return true;
+    } catch (e) {
+      log('WARN', '帧泵启动失败: ' + ((e && e.message) || e) + '，回退主线程');
+      stopGrabPump((e && e.message) || String(e));
+      st.pump.mode = 'main';
+      return false;
+    }
+  }
+
+  // 跟踪专用取帧。err:'NO_FRAME' = 下一帧还没到，调用方必须当**跳过**而不是
+  // 失败，否则第一轮就把 st.tracking 关掉。
+  function trackGrab(el) {
+    if (st.pump.mode === 'worker' || st.pump.mode === 'starting') {
+      var p = pumpLatest;
+      pumpLatest = null;
+      if (pumpWorker) pumpWorker.postMessage({ type: 'want' });
+      if (!p) return { err: 'NO_FRAME' };
+      if (p.std < 3) return { err: 'BLANK' };
+      // 几何只能在主线程算（worker 无 DOM）：内容矩形 ≠ 元素盒，见 contentBox
+      var b = contentBox(el);
+      return { grey: p.grey, w: p.w, h: p.h, cssX: b.x, cssY: b.y,
+               cssK: b.w / p.w, cssKy: b.h / p.h, std: p.std };
+    }
+    st.pump.trackGrabs++;
+    return grab(el, TRACK_W);
+  }
+
   // OpenCV 可能是 thenable、回调式或已就绪模块；三种都要兼容。
   var cvReady = null;         // Promise<boolean>
   var CVPIN = null;           // 第一次就绪的 cv 实例，之后一律用它
@@ -1036,6 +1126,7 @@
     if (!el) { log('ERR', 'findSurface: 未找到 video/canvas'); setStatus('未找到游戏画面', 'bad'); return false; }
     st.surface = el;
     hookFrameCounter(el);   // 首次定位时挂上帧计数，供跟踪循环跳过静止帧
+    startGrabPump(el);   // 失败则 mode='main'，trackGrab 自动退回同步 grab
     st.lastFitAttempt = Date.now();   // 成败都记，退避与去重都靠它
     if (fitWorkerState === 'ready') return fitViaWorker(el);
     var ok = fullFitSync(el);
@@ -1057,6 +1148,7 @@
       if (age < 1200) return true;
     }
     var tw = fitTargetW(el);
+    st.pump.fitGrabs++;
     var f = grab(el, tw || 960);
     if (f.err) { log('ERR', 'grab 失败: ' + f.err); setStatus('画面不可读: ' + f.err, 'bad'); noteFitFail(); return false; }
     fitReqMeta = {
@@ -1111,6 +1203,7 @@
             ' 耗时=' + (Date.now() - tb) + 'ms（仅回退模式）');
       }
       var tw = fitTargetW(el);
+      st.pump.fitGrabs++;
       var f = grab(el, tw || 960);
       if (f.err) { log('ERR', 'grab 失败: ' + f.err); setStatus('画面不可读: ' + f.err, 'bad'); return false; }
       var m = fitMsg(f, tw);
@@ -1152,13 +1245,16 @@
     // 缓存它并报 NO_SIZE。失效时丢掉光流状态，下一拍重新发现真实 surface。
     if (!st.surface.isConnected) {
       st.surface = null; st.fit = null; st.prevGrey = st.prevPts = null;
+      stopGrabPump('surface detached');
       setTimeout(function () { fullFit(false); }, 0); return;
     }
-    var f = grab(st.surface, 384);
+    var f = trackGrab(st.surface);
     if (f.err) {
+      if (f.err === 'NO_FRAME') return;   // 帧未到，静默跳过（见 trackGrab）
       setStatus('画面不可读: ' + f.err, 'bad'); st.tracking = false;
       if (f.err === 'NO_SIZE') {
         st.surface = null; st.fit = null; st.prevGrey = st.prevPts = null;
+        stopGrabPump('surface 失效');
         setTimeout(function () { fullFit(false); }, 0);
       }
       return;
@@ -1626,6 +1722,7 @@
       if (!st.raf && !st.idleTimer) st.raf = requestAnimationFrame(loop);
     } else {
       st.tracking = false;
+      stopGrabPump('叠加关闭');   // 否则 worker 继续 read() 轨道，白烧 CPU
       if (st.raf) { cancelAnimationFrame(st.raf); st.raf = 0; }
       if (st.idleTimer) { clearTimeout(st.idleTimer); st.idleTimer = 0; }
     }
@@ -1670,7 +1767,8 @@
       for (var k in c) if (!(k in st.enabled)) st.enabled[k] = true;
       renderList();
     },
-    grab: function () { var el = findSurface(); return el ? grab(el, 320) : { err: 'NO_SURFACE' }; }
+    grab: function () { var el = findSurface(); return el ? grab(el, 320) : { err: 'NO_SURFACE' }; },
+    pumpInfo: function () { return st.pump; }
   };
   setStatus('按 F8 开启叠加');
 })();

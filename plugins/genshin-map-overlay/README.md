@@ -29,6 +29,37 @@
 4. 帧间用光流（calcOpticalFlowPyrLK）连续跟随拖动/缩放，累计漂移超阈值
    自动触发一次重定位。
 
+## 取帧管线（0.9.3 起）
+
+跟踪的硬成本不是算法而是**取帧**：主线程每帧 `drawImage(video→canvas)` 要把
+GPU 纹理回读到 CPU，真机实测中位 **13.9ms**，20Hz 跟踪即 278ms/s，
+每帧 16.7ms 的预算被吃掉大半 —— 这是"拖地图掉到 30fps"的根因。
+
+0.9.3 起改用 `MediaStreamTrackProcessor` + `OffscreenCanvas`：worker 直接从视频
+轨道读 `VideoFrame`，缩放取灰度后把 buffer 零拷贝转移回主线程，主线程完全不
+参与取帧。worker 源码是 `vendor/grab_pump.js`（sha256 登记、宿主校验）。
+
+CDP 采样分析器实测（真 video 靶场，拖动 12s，全 13 类 7118 点）：
+
+| | 改前 | 改后 |
+|---|---|---|
+| `drawImage` selfTime | 111.7ms/s | **2.2ms/s** |
+| `getImageData` | 27.1ms/s | 不再出现在主线程 |
+| 主线程空闲 | 0.6% | **49.9%** |
+| 页面 FPS | 43.4（canvas 靶场） | 56.1 |
+
+**背压**：worker 只在主线程发 `{type:'want'}` 后才处理下一帧，否则会按流帧率
+一直算，等于把浪费从主线程搬到 worker，CPU 照样烧。
+
+**回退**：帧泵起不来时自动退回主线程 `grab()`，功能不受影响（只是慢）。
+已实测三种回退场景全部正常（`probe/test_pump_fallback.py`）：
+旧 WebView 无 `MediaStreamTrackProcessor`、`<video>` 无 `srcObject`（MSE/HLS）、
+画面是 `<canvas>`。`window.__miguMapOverlay.pumpInfo()` 可查当前模式与原因；
+`trackGrabs > 0` 即表示取帧退回了主线程。
+
+注意重定位（ORB）路径仍走主线程 `grab()`：它需要 960px 宽帧且频次低
+（实测 0.4 次/秒），不是热路径。
+
 ## 标定（改动前必读）
 
 以下常量由实测确定，改错会导致整体错位：
