@@ -110,7 +110,7 @@
   }
 
 
-  var PLUGIN_VER = '0.12.0';   // 与 plugin.json 同步；日志里可确认设备版本
+  var PLUGIN_VER = '0.12.1';   // 与 plugin.json 同步；日志里可确认设备版本
   var REPO = 'https://raw.githubusercontent.com/preauthn1/migu-play-plugins/main/plugins/genshin-map-overlay/';
 
   // ---- 标定常量（实测确定，改前先读 README 的"标定"一节）------------------
@@ -396,17 +396,19 @@
   }
   window.__miguMapOverlayShowLog = showLog;
 
-  // 阻止面板上的事件流向游戏（否则拖动面板会同时拖动地图）
+  // 阻止面板上的事件流向游戏（否则拖动面板会同时拖动地图）。必须挂在
+  // 冒泡阶段：捕获阶段在事件到达子按钮前 stopPropagation，会让日志/折叠/关闭
+  // 三个按钮全部收不到点击。
   ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'click',
    'wheel', 'touchstart', 'touchmove', 'dblclick'].forEach(function (t) {
-    panel.addEventListener(t, function (e) { e.stopPropagation(); }, true);
+    panel.addEventListener(t, function (e) { e.stopPropagation(); }, false);
   });
 
   // 面板可拖动，避免挡住游戏关键区域
   (function () {
     var dragging = false, ox = 0, oy = 0;
     head.addEventListener('pointerdown', function (e) {
-      if (e.target === btnFold || e.target === btnClose) return;
+      if (e.target === btnLog || e.target === btnFold || e.target === btnClose) return;
       dragging = true;
       var r = panel.getBoundingClientRect();
       ox = e.clientX - r.left; oy = e.clientY - r.top;
