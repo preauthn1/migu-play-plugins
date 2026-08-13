@@ -79,7 +79,7 @@
     {
       "id": "genshin-map-overlay",
       "name": "原神地图叠加",
-      "version": "0.10.0",
+      "version": "0.12.0",
       "author": "preauthn1",
       "description": "wiki 全地标点位叠加在游戏内大地图，ORB+光流连续跟随，F8 切换。",
       "match": [
@@ -105,9 +105,19 @@
           "size": 21801
         },
         {
+          "path": "vendor/grab_pump.js",
+          "sha256": "f6a59295466cacca149e154f553667833150af2a874ad03652a05794b523dd34",
+          "size": 3812
+        },
+        {
           "path": "data/points.json",
-          "sha256": "ebd018cf982d6661fef86fa4543e7b695d587720e424900976804acb28cf6127",
-          "size": 117852
+          "sha256": "c543e771debfb66b99718bd30309f6ab2cbdb1a7fbcfae66e312565e06c7b351",
+          "size": 948327
+        },
+        {
+          "path": "data/descs.json",
+          "sha256": "46aaad94f2fc2e94761709e8b41cbe16bb9f330c090b59b2145762c93ed9a9c0",
+          "size": 870256
         },
         {
           "path": "data/ref_map.jpg",
@@ -116,8 +126,8 @@
         },
         {
           "path": "data/icons.json",
-          "sha256": "9d76b3f340a0a25bb2bfa44bc07697f539202f56c037376b63d313d18dd02f3f",
-          "size": 1737
+          "sha256": "cd8bafbc087b7c1980456750cbc9b18a6931b8523940f647b5397e982d5fa5f5",
+          "size": 69047
         }
       ],
       "script": "plugins/genshin-map-overlay/main.js"
